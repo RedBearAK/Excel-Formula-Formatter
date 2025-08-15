@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Modular Excel formula formatter supporting multiple target languages.
+Complete rewrite with true function isolation using recursive descent parsing.
 File: excel_formula_formatter/modular_excel_formatter.py
 """
 
@@ -20,7 +21,7 @@ from excel_formula_formatter.css_translator import CSSTranslator
 
 
 class ModularExcelFormatter:
-    """Excel formula formatter with pluggable syntax translators."""
+    """Excel formula formatter with pluggable syntax translators and true function isolation."""
     
     def __init__(self, translator: SyntaxTranslatorBase):
         self.translator = translator
@@ -60,7 +61,7 @@ class ModularExcelFormatter:
         # Parse Excel tokens
         tokens = self._parse_excel_tokens(clean_formula)
         
-        # Format using the translator
+        # Format using the translator with true isolation
         formatted_lines = self._format_tokens_with_translator(tokens)
         
         # Add array formula markers if needed
@@ -169,310 +170,347 @@ class ModularExcelFormatter:
             return 'identifier'
     
     def _format_tokens_with_translator(self, tokens: list) -> list:
-        """Convert tokens using the configured translator."""
+        """Convert tokens using the configured translator with TRUE function isolation."""
         lines = []
-        current_line = ""
-        depth = 0
-        depth_stack = []  # Track whether each depth level is inline or multiline
-        function_stack = []  # Track function names for special handling
-        let_arg_count = 0  # Track argument position in LET functions
-        ifs_arg_stack = []  # Stack of argument counts for nested IFS/SWITCH functions
-        ifs_depth_stack = []  # Track parentheses depth for each IFS level
-        paren_depth = 0  # Global parentheses depth counter
-        
-        # Add header comment
         lines.append(self.translator.format_header_comment())
         
+        # Process tokens with isolated function handling
+        processed_lines = self._process_token_sequence(tokens, base_depth=0)
+        lines.extend(processed_lines)
+        
+        return lines
+
+    def _process_token_sequence(self, tokens: list, base_depth: int) -> list:
+        """Process a sequence of tokens with proper function isolation."""
+        lines = []
+        current_line = ""
         i = 0
+        
+        # Don't filter tokens here - let _tokens_to_string handle it
         while i < len(tokens):
             token_type, token_text = tokens[i]
             
-            if token_type == 'punctuation' and token_text == '(':
-                formatted_punct = self.translator.format_punctuation(token_text)
-                current_line += formatted_punct
-                paren_depth += 1
+            if token_type == 'function':
+                # Handle function calls with complete isolation
+                func_name = token_text.upper()
                 
-                # Check what function we're entering
-                if i > 0 and tokens[i-1][0] == 'function':
-                    func_name = tokens[i-1][1].upper()
-                    function_stack.append(func_name)
-                    if func_name == 'LET':
-                        let_arg_count = 0
-                    elif func_name in ['IFS', 'SWITCH']:
-                        ifs_arg_stack.append(0)  # Push new counter for this IFS level
-                        ifs_depth_stack.append(paren_depth)  # Track the depth where this IFS starts
-                else:
-                    function_stack.append('')
-                
-                # Check if this should use natural wrapping (AND, OR, etc.)
-                should_natural_wrap = self._should_use_natural_wrapping(tokens, i)
-                
-                # Look ahead to determine if this should be inline (simplified for modular)
-                if should_natural_wrap:
-                    # Use natural wrapping for AND/OR functions
-                    depth_stack.append('natural_wrap')
-                    current_line += "  "  # Add 2 spaces after opening paren
+                # Find the function's argument tokens (between parentheses)
+                if i + 1 < len(tokens) and tokens[i + 1][1] == '(':
+                    arg_tokens, end_index = self._extract_function_arguments(tokens, i + 1)
                     
-                elif self._should_keep_simple_inline(tokens, i):
-                    # Keep this function call inline
-                    depth_stack.append('inline')
-                    i += 1
-                    paren_depth = 1
-                    inline_content = ""
-                    
-                    # Collect everything until matching closing parenthesis
-                    while i < len(tokens) and paren_depth > 0:
-                        t_type, t_text = tokens[i]
-                        
-                        if t_type == 'punctuation' and t_text == '(':
-                            paren_depth += 1
-                            inline_content += self.translator.format_punctuation(t_text)
-                        elif t_type == 'punctuation' and t_text == ')':
-                            paren_depth -= 1
-                            if paren_depth > 0:
-                                inline_content += self.translator.format_punctuation(t_text)
-                        elif t_type == 'cell_ref':
-                            inline_content += self.translator.format_cell_reference(t_text)
-                        elif t_type == 'operator':
-                            inline_content += self.translator.format_operator(t_text).strip()
-                        elif t_type == 'string':
-                            inline_content += self.translator.format_string_literal(t_text)
-                        elif t_type == 'punctuation' and t_text == ',':
-                            inline_content += ', '
-                        elif t_type == 'number':
-                            inline_content += self.translator.format_number(t_text)
-                        else:
-                            inline_content += t_text
-                        
-                        i += 1
-                    
-                    # Add the inline content and closing paren
-                    current_line += inline_content + self.translator.format_punctuation(')')
-                    depth_stack.pop()
-                    function_stack.pop()
-                    i -= 1  # Back up one since the loop will increment
-                else:
-                    # Multi-line function call
-                    depth_stack.append('multiline')
-                    self._add_line_if_not_empty(lines, current_line, depth)
-                    current_line = ""
-                    depth += 1
-                
-            elif token_type == 'punctuation' and token_text == ')':
-                paren_depth -= 1
-                
-                # Check context for closing behavior
-                if depth_stack and depth_stack[-1] == 'natural_wrap':
-                    # Natural wrapping: add 2 spaces before closing paren
-                    current_line += "  " + self.translator.format_punctuation(token_text)
-                    depth_stack.pop()
-                    function_stack.pop()
-                elif depth_stack and depth_stack[-1] == 'inline':
-                    # This shouldn't happen with our new logic
-                    formatted_punct = self.translator.format_punctuation(token_text)
-                    current_line += formatted_punct
-                    depth_stack.pop()
-                else:
-                    # This is a multi-line function closing
-                    self._add_line_if_not_empty(lines, current_line, depth)
-                    depth = max(0, depth - 1)
-                    
-                    # Look ahead to see if there's a comma after this closing paren
-                    next_token_is_comma = (i + 1 < len(tokens) and 
-                                         tokens[i + 1][0] == 'punctuation' and 
-                                         tokens[i + 1][1] == ',')
-                    
-                    formatted_punct = self.translator.format_punctuation(token_text)
-                    if next_token_is_comma:
-                        # Put the closing paren and comma together
-                        comma_punct = self.translator.format_punctuation(',')
-                        lines.append(self.translator.indent(depth) + formatted_punct + comma_punct.strip())
-                        i += 1  # Skip the comma token since we've handled it
+                    # Process this function in complete isolation
+                    if func_name in ['IFS', 'SWITCH']:
+                        func_lines = self._process_ifs_function(token_text, arg_tokens, base_depth)
+                    elif func_name == 'LET':
+                        func_lines = self._process_let_function(token_text, arg_tokens, base_depth)
+                    elif func_name in ['AND', 'OR']:
+                        func_lines = self._process_logical_function(token_text, arg_tokens, base_depth)
                     else:
-                        lines.append(self.translator.indent(depth) + formatted_punct)
+                        func_lines = self._process_generic_function(token_text, arg_tokens, base_depth)
                     
-                    current_line = ""
-                    if depth_stack:
-                        depth_stack.pop()
-                    if function_stack:
-                        # Check if we're exiting an IFS/SWITCH function and clean up stacks
-                        if function_stack[-1] in ['IFS', 'SWITCH'] and ifs_arg_stack and ifs_depth_stack:
-                            # Only pop if we're at the right depth level for this IFS
-                            if ifs_depth_stack[-1] == paren_depth + 1:  # +1 because we already decremented paren_depth
-                                ifs_arg_stack.pop()
-                                ifs_depth_stack.pop()
-                        function_stack.pop()
-                
-            elif token_type == 'punctuation' and token_text == ',':
-                # Handle commas based on context
-                formatted_punct = self.translator.format_punctuation(token_text)
-                
-                if depth_stack and depth_stack[-1] == 'natural_wrap':
-                    # Natural wrapping: add comma + space, check if line is too long
-                    current_line += ', '
-                    if len(current_line) > 70:  # Line length threshold (reduced for better wrapping)
-                        self._add_line_if_not_empty(lines, current_line.rstrip(', ') + ',', depth)
-                        current_line = self.translator.indent(depth + 1)
-                
-                elif function_stack and 'LET' in function_stack:
-                    # Keep comma attached to what comes before it
-                    current_line += formatted_punct
-                    let_arg_count += 1
-                    # In LET: keep pairs together (name, value on same line)
-                    # Break line only after every second argument (after the value)
-                    if let_arg_count % 2 == 0:  # After value (even numbered args)
-                        self._add_line_if_not_empty(lines, current_line, depth)
+                    # Add the function content
+                    if current_line.strip():
+                        lines.append(self.translator.indent(base_depth) + current_line.strip())
                         current_line = ""
-                    else:  # After variable name (odd numbered args)
-                        current_line += " "
-                
-                elif ifs_arg_stack and ifs_depth_stack:
-                    # Check if this comma is at the direct level of any IFS function
-                    ifs_found = False
-                    for idx, ifs_start_depth in enumerate(ifs_depth_stack):
-                        if paren_depth == ifs_start_depth:  # This comma is direct to this IFS level
-                            # Always break line after comma in IFS/SWITCH for clean separation
-                            current_line += formatted_punct
-                            self._add_line_if_not_empty(lines, current_line, depth)
-                            current_line = ""
-                            # Increment the argument count for this specific IFS level
-                            ifs_arg_stack[idx] += 1
-                            ifs_found = True
-                            break
                     
-                    if not ifs_found:
-                        # This comma is not direct to any IFS (it's inside a nested function)
-                        current_line += formatted_punct + ' '
-                
-                elif depth > 0:
-                    # Multi-line context (but not LET or IFS) - break line
-                    current_line += formatted_punct
-                    self._add_line_if_not_empty(lines, current_line, depth)
-                    current_line = ""
+                    lines.extend(func_lines)
+                    i = end_index
                 else:
-                    # Top level - just add space for some translators
-                    current_line += formatted_punct
-                    if not formatted_punct.endswith('\n'):
-                        current_line += ' '
-                
+                    # Function without parentheses - treat as identifier
+                    current_line += self.translator.format_function_call(token_text)
+            
             elif token_type == 'cell_ref':
-                # Add separator before conditions in IFS/SWITCH (cell references can be conditions)
-                if (function_stack and function_stack[-1] in ['IFS', 'SWITCH'] and 
-                    ifs_arg_stack and ifs_arg_stack[-1] > 0 and ifs_arg_stack[-1] % 2 == 0):  # Before condition (even positions after first)
-                    lines.append("")  # Blank line
-                    comment = self.translator.format_section_comment(f"── CASE/RESULT PAIR ── DEBUG: cell_ref count={ifs_arg_stack[-1]}")
-                    lines.append(self.translator.indent(depth) + comment)
-                
-                formatted_ref = self.translator.format_cell_reference(token_text)
-                current_line += formatted_ref
-                
-            elif token_type == 'operator':
-                formatted_op = self.translator.format_operator(token_text)
-                current_line += formatted_op
-                
-            elif token_type == 'function':
-                # Look ahead to see if this will be inline
-                will_be_inline = self._should_keep_simple_inline(tokens, i + 1)
-                will_natural_wrap = self._should_use_natural_wrapping(tokens, i + 1)
-                
-                # Add comment for function sections only for complex functions
-                # Suppress generic comments when inside IFS/SWITCH
-                if not will_be_inline and not will_natural_wrap:
-                    should_suppress_comment = (function_stack and 
-                                             any(f in ['IFS', 'SWITCH'] for f in function_stack))
-                    
-                    if not should_suppress_comment:
-                        if current_line.strip():
-                            self._add_line_if_not_empty(lines, current_line, depth)
-                            current_line = ""
-                        
-                        comment = self.translator.get_function_comment(token_text)
-                        if comment:
-                            section_comment = self.translator.format_section_comment(comment)
-                            lines.append(self.translator.indent(depth) + section_comment)
-                
-                # Add first case separator ONLY for the IFS/SWITCH function itself
-                if token_text.upper() in ['IFS', 'SWITCH']:
-                    comment = self.translator.format_section_comment("── CASE/RESULT PAIR ──")
-                    lines.append(self.translator.indent(depth) + comment)
-                
-                formatted_func = self.translator.format_function_call(token_text)
-                current_line += formatted_func
-                
+                current_line += self.translator.format_cell_reference(token_text)
             elif token_type == 'string':
-                formatted_str = self.translator.format_string_literal(token_text)
-                current_line += formatted_str
-                
+                current_line += self.translator.format_string_literal(token_text)
             elif token_type == 'number':
-                formatted_num = self.translator.format_number(token_text)
-                current_line += formatted_num
-                
+                current_line += self.translator.format_number(token_text)
+            elif token_type == 'operator':
+                current_line += self.translator.format_operator(token_text)
+            elif token_type == 'punctuation' and token_text == ',':
+                # Top-level comma - just add space
+                current_line += self.translator.format_punctuation(token_text) + " "
+            elif token_type == 'punctuation':
+                current_line += self.translator.format_punctuation(token_text)
             else:
-                # Add separator before conditions in IFS/SWITCH (for literals, identifiers, etc.)
-                if (function_stack and function_stack[-1] in ['IFS', 'SWITCH'] and 
-                    ifs_arg_stack and ifs_arg_stack[-1] > 0 and ifs_arg_stack[-1] % 2 == 0):  # Before condition (even positions after first)
-                    lines.append("")  # Blank line
-                    comment = self.translator.format_section_comment(f"── CASE/RESULT PAIR ── DEBUG: other count={ifs_arg_stack[-1]}")
-                    lines.append(self.translator.indent(depth) + comment)
-                
                 current_line += token_text
-                
+            
             i += 1
         
         # Add any remaining content
-        self._add_line_if_not_empty(lines, current_line, depth)
+        if current_line.strip():
+            lines.append(self.translator.indent(base_depth) + current_line.strip())
         
         return lines
-    
-    def _should_use_natural_wrapping(self, tokens: list, paren_index: int) -> bool:
-        """Determine if a function should use natural length-based wrapping."""
-        if paren_index >= len(tokens) or tokens[paren_index][1] != '(':
-            return False
+
+    def _extract_function_arguments(self, tokens: list, paren_start: int) -> tuple:
+        """Extract tokens between matching parentheses."""
+        if tokens[paren_start][1] != '(':
+            return [], paren_start
         
-        # Look at the function name before the parenthesis
-        if paren_index > 0:
-            prev_token = tokens[paren_index - 1]
-            if prev_token[0] == 'function':
-                function_name = prev_token[1].upper()
-                # Functions that should use natural wrapping
-                natural_wrap_functions = {'AND', 'OR'}
-                return function_name in natural_wrap_functions
+        arg_tokens = []
+        depth = 1
+        i = paren_start + 1
         
-        return False
-    
-    def _should_keep_simple_inline(self, tokens: list, paren_index: int) -> bool:
-        """Simplified inline detection for modular formatter."""
-        if paren_index >= len(tokens) or tokens[paren_index][1] != '(':
-            return False
-        
-        # Count arguments and complexity (simplified version)
-        i = paren_index + 1
-        paren_depth = 1
-        arg_count = 0
-        has_nested_functions = False
-        
-        while i < len(tokens) and paren_depth > 0 and i < paren_index + 10:  # Limit lookahead
+        while i < len(tokens) and depth > 0:
             token_type, token_text = tokens[i]
             
-            if token_type == 'punctuation' and token_text == '(':
-                paren_depth += 1
-                if paren_depth > 1:
-                    has_nested_functions = True
-            elif token_type == 'punctuation' and token_text == ')':
-                paren_depth -= 1
-            elif token_type == 'punctuation' and token_text == ',' and paren_depth == 1:
-                arg_count += 1
+            if token_text == '(':
+                depth += 1
+            elif token_text == ')':
+                depth -= 1
+                
+            if depth > 0:  # Don't include the final closing paren
+                arg_tokens.append((token_type, token_text))
             
             i += 1
         
-        # Simple criteria: 1-2 args, no nesting, reasonable lookahead
-        return arg_count <= 1 and not has_nested_functions
-    
-    def _add_line_if_not_empty(self, lines: list, line: str, depth: int):
-        """Add line to list if it has content."""
-        stripped = line.strip()
-        if stripped:
-            lines.append(self.translator.indent(depth) + stripped)
+        return arg_tokens, i
+
+    def _process_ifs_function(self, func_name: str, arg_tokens: list, base_depth: int) -> list:
+        """Process IFS/SWITCH function in complete isolation."""
+        lines = []
+        
+        # Add function comment only if we're not already inside an IFS/SWITCH
+        comment = self.translator.get_function_comment(func_name)
+        if comment:
+            lines.append(self.translator.indent(base_depth) + self.translator.format_section_comment(comment))
+        
+        # Function header
+        lines.append(self.translator.indent(base_depth) + self.translator.format_function_call(func_name) + self.translator.format_punctuation('('))
+        
+        # Split arguments by top-level commas
+        argument_groups = self._split_by_top_level_commas(arg_tokens)
+        
+        # Add initial separator only if we have arguments
+        if argument_groups:
+            lines.append(self.translator.indent(base_depth + 1) + self.translator.format_section_comment("── CASE/RESULT PAIR ──"))
+        
+        for arg_index, arg_group in enumerate(argument_groups):
+            # Add separator before each condition (even arguments > 1, i.e., arguments 2, 4, 6...)
+            if arg_index > 1 and arg_index % 2 == 0:
+                lines.append("")  # Blank line
+                lines.append(self.translator.indent(base_depth + 1) + self.translator.format_section_comment("── CASE/RESULT PAIR ──"))
+            
+            # Process this argument group
+            arg_lines = self._process_token_sequence(arg_group, base_depth + 1)
+            
+            # Add comma if not last argument
+            if arg_index < len(argument_groups) - 1:
+                if arg_lines:
+                    arg_lines[-1] += self.translator.format_punctuation(',')
+                else:
+                    lines.append(self.translator.indent(base_depth + 1) + self.translator.format_punctuation(','))
+            
+            lines.extend(arg_lines)
+        
+        # Closing paren
+        lines.append(self.translator.indent(base_depth) + self.translator.format_punctuation(')'))
+        
+        return lines
+
+    def _process_let_function(self, func_name: str, arg_tokens: list, base_depth: int) -> list:
+        """Process LET function in complete isolation."""
+        lines = []
+        
+        # Add function comment
+        comment = self.translator.get_function_comment(func_name)
+        if comment:
+            lines.append(self.translator.indent(base_depth) + self.translator.format_section_comment(comment))
+        
+        # Function header
+        lines.append(self.translator.indent(base_depth) + self.translator.format_function_call(func_name) + self.translator.format_punctuation('('))
+        
+        # Split arguments by top-level commas
+        argument_groups = self._split_by_top_level_commas(arg_tokens)
+        
+        i = 0
+        while i < len(argument_groups):
+            # LET pairs: keep variable name and value on same line
+            if i % 2 == 0 and i + 1 < len(argument_groups):
+                # Process variable name (should be simple identifier)
+                var_name = self._tokens_to_string(argument_groups[i]).strip()
+                
+                # Process value (could be complex expression)
+                value_str = self._tokens_to_string(argument_groups[i + 1]).strip()
+                
+                # Combine on same line: variable, value,
+                combined_line = self.translator.indent(base_depth + 1) + var_name + self.translator.format_punctuation(',') + " " + value_str
+                
+                # Add comma if not the last pair (check if this isn't the final expression)
+                if i + 2 < len(argument_groups):
+                    combined_line += self.translator.format_punctuation(',')
+                
+                lines.append(combined_line)
+                i += 2  # Skip both variable and value
+            else:
+                # Final expression (not a pair) - should be the last argument
+                final_expr_lines = self._process_token_sequence(argument_groups[i], base_depth + 1)
+                lines.extend(final_expr_lines)
+                i += 1
+        
+        # Closing paren
+        lines.append(self.translator.indent(base_depth) + self.translator.format_punctuation(')'))
+        
+        return lines
+
+    def _process_logical_function(self, func_name: str, arg_tokens: list, base_depth: int) -> list:
+        """Process AND/OR functions with natural wrapping."""
+        lines = []
+        
+        # Split arguments by top-level commas
+        argument_groups = self._split_by_top_level_commas(arg_tokens)
+        
+        # Filter out any empty argument groups
+        argument_groups = [group for group in argument_groups if group]
+        
+        if not argument_groups:
+            # Empty function call
+            func_str = self.translator.format_function_call(func_name) + self.translator.format_punctuation('(') + self.translator.format_punctuation(')')
+            lines.append(self.translator.indent(base_depth) + func_str)
+            return lines
+        
+        # Check if we should keep inline - increased threshold for better use of line width
+        total_length = sum(len(self._tokens_to_string(group)) for group in argument_groups)
+        
+        if len(argument_groups) <= 2 and total_length < 65:
+            # Keep inline
+            func_str = self.translator.format_function_call(func_name) + self.translator.format_punctuation('(') + "  "
+            
+            for arg_index, arg_group in enumerate(argument_groups):
+                arg_str = self._tokens_to_string(arg_group).strip()
+                if arg_str:  # Only add non-empty arguments
+                    func_str += arg_str
+                    if arg_index < len(argument_groups) - 1:
+                        func_str += ", "
+            
+            func_str += "  " + self.translator.format_punctuation(')')
+            lines.append(self.translator.indent(base_depth) + func_str)
+        else:
+            # Multi-line with natural wrapping - keep function name with first argument
+            first_arg = self._tokens_to_string(argument_groups[0]).strip() if argument_groups else ""
+            
+            # Start with function name and first argument on same line
+            first_line = (self.translator.format_function_call(func_name) + 
+                         self.translator.format_punctuation('(') + "  " + first_arg)
+            
+            if len(argument_groups) > 1:
+                first_line += ","
+            
+            lines.append(self.translator.indent(base_depth) + first_line)
+            
+            # Add remaining arguments with proper indentation
+            for arg_index in range(1, len(argument_groups)):
+                arg_str = self._tokens_to_string(argument_groups[arg_index]).strip()
+                
+                if arg_str:  # Only add non-empty arguments
+                    arg_line = self.translator.indent(base_depth + 1) + arg_str
+                    if arg_index < len(argument_groups) - 1:
+                        arg_line += ","
+                    lines.append(arg_line)
+            
+            # Closing parenthesis with internal spacing - keeps the "  )" together
+            lines.append(self.translator.indent(base_depth) + "  " + self.translator.format_punctuation(')'))
+        
+        return lines
+
+    def _process_generic_function(self, func_name: str, arg_tokens: list, base_depth: int) -> list:
+        """Process generic functions."""
+        lines = []
+        
+        # Simple inline check
+        total_length = len(self._tokens_to_string(arg_tokens))
+        
+        if total_length < 30:
+            # Keep inline
+            func_str = self.translator.format_function_call(func_name) + self.translator.format_punctuation('(')
+            func_str += self._tokens_to_string(arg_tokens)
+            func_str += self.translator.format_punctuation(')')
+            lines.append(self.translator.indent(base_depth) + func_str)
+        else:
+            # Multi-line
+            lines.append(self.translator.indent(base_depth) + self.translator.format_function_call(func_name) + self.translator.format_punctuation('('))
+            
+            # Process arguments
+            argument_groups = self._split_by_top_level_commas(arg_tokens)
+            for arg_index, arg_group in enumerate(argument_groups):
+                arg_lines = self._process_token_sequence(arg_group, base_depth + 1)
+                
+                if arg_index < len(argument_groups) - 1:
+                    if arg_lines:
+                        arg_lines[-1] += self.translator.format_punctuation(',')
+                
+                lines.extend(arg_lines)
+            
+            lines.append(self.translator.indent(base_depth) + self.translator.format_punctuation(')'))
+        
+        return lines
+
+    def _split_by_top_level_commas(self, tokens: list) -> list:
+        """Split tokens by commas that are at the top level (depth 0)."""
+        if not tokens:
+            return []
+            
+        groups = []
+        current_group = []
+        depth = 0
+        
+        for token_type, token_text in tokens:
+            if token_text == '(':
+                depth += 1
+                current_group.append((token_type, token_text))
+            elif token_text == ')':
+                depth -= 1
+                current_group.append((token_type, token_text))
+            elif token_text == ',' and depth == 0:
+                # Top-level comma - start new group only if current group has content
+                if current_group:
+                    groups.append(current_group)
+                    current_group = []
+                # Don't add the comma to either group - it's just a separator
+            else:
+                # Add all other tokens including whitespace (we'll filter later if needed)
+                current_group.append((token_type, token_text))
+        
+        # Add the last group only if it has content
+        if current_group:
+            groups.append(current_group)
+        
+        # Filter out completely empty groups, but preserve groups with meaningful content
+        filtered_groups = []
+        for group in groups:
+            # Check if group has any non-whitespace content
+            has_content = any(token_text.strip() for token_type, token_text in group)
+            if has_content:
+                filtered_groups.append(group)
+        
+        return filtered_groups
+
+    def _tokens_to_string(self, tokens: list) -> str:
+        """Convert token sequence to formatted string."""
+        result = ""
+        for i, (token_type, token_text) in enumerate(tokens):
+            if token_type == 'cell_ref':
+                result += self.translator.format_cell_reference(token_text)
+            elif token_type == 'string':
+                result += self.translator.format_string_literal(token_text)
+            elif token_type == 'number':
+                result += self.translator.format_number(token_text)
+            elif token_type == 'operator':
+                # Let the translator handle ALL operator formatting consistently
+                # Don't override - the translator already handles spacing properly
+                result += self.translator.format_operator(token_text)
+            elif token_type == 'function':
+                result += self.translator.format_function_call(token_text)
+            elif token_type == 'punctuation':
+                if token_text == ',':
+                    result += ', '  # Always add space after comma
+                else:
+                    result += self.translator.format_punctuation(token_text)
+            else:
+                result += token_text
+        
+        return result.strip()
     
     def _reverse_parse_with_translator(self, formatted_text: str) -> str:
         """Use translator-specific reverse parsing."""

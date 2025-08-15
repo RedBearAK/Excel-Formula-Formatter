@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Excel formula formatter with reversible JavaScript-like syntax transformation.
+Fixed version with proper parentheses depth tracking for IFS/SWITCH functions.
 File: excel_formula_formatter/excel_formula_formatter.py
 """
 
@@ -109,7 +110,6 @@ class ExcelFormulaFormatter:
                 continue
             
             # Check for cell references (including ranges and sheet references)
-            # Look ahead to see if this could be a cell reference
             cell_match = cell_ref_all_rgx.match(formula, i)
             if cell_match:
                 token_text = cell_match.group(0)
@@ -157,7 +157,7 @@ class ExcelFormulaFormatter:
             return 'identifier'
     
     def _format_tokens_to_js(self, tokens: list) -> list:
-        """Convert tokens to JavaScript-like formatted lines with smart folding."""
+        """Convert tokens to JavaScript-like formatted lines with proper depth isolation."""
         lines = []
         current_line = ""
         depth = 0
@@ -165,6 +165,8 @@ class ExcelFormulaFormatter:
         function_stack = []  # Track function names for special handling
         let_arg_count = 0  # Track argument position in LET functions
         ifs_arg_stack = []  # Stack of argument counts for nested IFS/SWITCH functions
+        ifs_depth_stack = []  # Track parentheses depth where each IFS starts
+        paren_depth = 0  # Global parentheses depth counter
         
         # Add header comment
         lines.append("// Excel Formula (JavaScript syntax for highlighting)")
@@ -175,6 +177,7 @@ class ExcelFormulaFormatter:
             
             if token_type == 'punctuation' and token_text == '(':
                 current_line += token_text
+                paren_depth += 1
                 
                 # Check what function we're entering
                 if i > 0 and tokens[i-1][0] == 'function':
@@ -184,6 +187,7 @@ class ExcelFormulaFormatter:
                         let_arg_count = 0
                     elif func_name in ['IFS', 'SWITCH']:
                         ifs_arg_stack.append(0)  # Push new counter for this IFS level
+                        ifs_depth_stack.append(paren_depth)  # Track the depth where this IFS starts
                 else:
                     function_stack.append('')
                 
@@ -197,22 +201,22 @@ class ExcelFormulaFormatter:
                     current_line += "  "  # Add 2 spaces after opening paren
                     
                 elif self._should_keep_inline(tokens, i):
-                    # Keep this function call inline - don't change depth or break line
+                    # Keep this function call inline
                     depth_stack.append('inline')
                     i += 1
-                    paren_depth = 1
+                    paren_depth_inline = 1
                     inline_content = ""
                     
                     # Collect everything until matching closing parenthesis
-                    while i < len(tokens) and paren_depth > 0:
+                    while i < len(tokens) and paren_depth_inline > 0:
                         t_type, t_text = tokens[i]
                         
                         if t_type == 'punctuation' and t_text == '(':
-                            paren_depth += 1
+                            paren_depth_inline += 1
                             inline_content += t_text
                         elif t_type == 'punctuation' and t_text == ')':
-                            paren_depth -= 1
-                            if paren_depth > 0:  # Don't include the final closing paren yet
+                            paren_depth_inline -= 1
+                            if paren_depth_inline > 0:
                                 inline_content += t_text
                         elif t_type == 'cell_ref':
                             inline_content += f'"{t_text}"'
@@ -229,8 +233,8 @@ class ExcelFormulaFormatter:
                     
                     # Add the inline content and closing paren
                     current_line += inline_content + ')'
-                    depth_stack.pop()  # Remove the inline marker
-                    function_stack.pop()  # Remove function from stack
+                    depth_stack.pop()
+                    function_stack.pop()
                     i -= 1  # Back up one since the loop will increment
                 else:
                     # Multi-line function call
@@ -240,6 +244,8 @@ class ExcelFormulaFormatter:
                     depth += 1
                 
             elif token_type == 'punctuation' and token_text == ')':
+                paren_depth -= 1
+                
                 # Check context for closing behavior
                 if depth_stack and depth_stack[-1] == 'natural_wrap':
                     # Natural wrapping: add 2 spaces before closing paren
@@ -274,17 +280,20 @@ class ExcelFormulaFormatter:
                     if depth_stack:
                         depth_stack.pop()
                     if function_stack:
-                        # Check if we're exiting an IFS/SWITCH function
-                        if function_stack[-1] in ['IFS', 'SWITCH'] and ifs_arg_stack:
-                            ifs_arg_stack.pop()
+                        # Check if we're exiting an IFS/SWITCH function and clean up stacks
+                        if function_stack[-1] in ['IFS', 'SWITCH'] and ifs_arg_stack and ifs_depth_stack:
+                            # Only pop if we're at the right depth level for this IFS
+                            if ifs_depth_stack[-1] == paren_depth + 1:  # +1 because we already decremented paren_depth
+                                ifs_arg_stack.pop()
+                                ifs_depth_stack.pop()
                         function_stack.pop()
                 
             elif token_type == 'punctuation' and token_text == ',':
-                # Handle commas based on context
+                # Handle commas based on context - KEY FIX: Only count commas at proper depth
                 if depth_stack and depth_stack[-1] == 'natural_wrap':
                     # Natural wrapping: add comma + space, check if line is too long
                     current_line += ', '
-                    if len(current_line) > 70:  # Line length threshold (reduced for better wrapping)
+                    if len(current_line) > 70:  # Line length threshold
                         self._add_line_if_not_empty(lines, current_line.rstrip(', ') + ',', depth)
                         current_line = self._indent(depth + 1)
                 
@@ -301,15 +310,22 @@ class ExcelFormulaFormatter:
                         current_line += " "
                 
                 elif function_stack and function_stack[-1] in ['IFS', 'SWITCH']:
-                    # IFS/SWITCH: Always break line after comma for clean separation
-                    current_line += token_text
-                    self._add_line_if_not_empty(lines, current_line, depth)
-                    current_line = ""
-                    # Increment the argument count for the current IFS level
-                    if ifs_arg_stack:
-                        ifs_arg_stack[-1] += 1
-                        # Debug: show which level we're incrementing
-                        lines.append(self._indent(depth) + f"// DEBUG: comma increment level={len(ifs_arg_stack)} count={ifs_arg_stack[-1]} func_stack={function_stack}")
+                    # CRITICAL FIX: Only count commas that are direct children of the current IFS
+                    # Check if we're at the same depth where the IFS function started
+                    is_direct_ifs_comma = (ifs_depth_stack and 
+                                          paren_depth == ifs_depth_stack[-1])
+                    
+                    if is_direct_ifs_comma:
+                        # This comma is a direct argument to the current IFS - count it
+                        current_line += token_text
+                        self._add_line_if_not_empty(lines, current_line, depth)
+                        current_line = ""
+                        # Increment the argument count for the current IFS level
+                        if ifs_arg_stack:
+                            ifs_arg_stack[-1] += 1
+                    else:
+                        # This comma is inside a nested function (like AND) - don't count it
+                        current_line += token_text + ' '
                 
                 elif depth > 0:
                     # Multi-line context (but not LET or IFS) - break line
@@ -322,10 +338,13 @@ class ExcelFormulaFormatter:
                 
             elif token_type == 'cell_ref':
                 # Add separator before conditions in IFS/SWITCH (cell references can be conditions)
+                # CRITICAL FIX: Only add separators for direct IFS arguments, not nested functions
                 if (function_stack and function_stack[-1] in ['IFS', 'SWITCH'] and 
-                    ifs_arg_stack and ifs_arg_stack[-1] > 0 and ifs_arg_stack[-1] % 2 == 0):  # Before condition (even positions after first)
+                    ifs_arg_stack and ifs_depth_stack and
+                    paren_depth == ifs_depth_stack[-1] and  # Only at direct IFS level
+                    ifs_arg_stack[-1] > 0 and ifs_arg_stack[-1] % 2 == 0):  # Before condition
                     lines.append("")  # Blank line
-                    lines.append(self._indent(depth) + f"// ── CASE/RESULT PAIR ── DEBUG: cell_ref count={ifs_arg_stack[-1]}")
+                    lines.append(self._indent(depth) + "// ── CASE/RESULT PAIR ──")
                 
                 # Quote cell references for string highlighting
                 current_line += f'"{token_text}"'
@@ -365,10 +384,13 @@ class ExcelFormulaFormatter:
                 
             else:
                 # Add separator before conditions in IFS/SWITCH (for literals, identifiers, etc.)
+                # CRITICAL FIX: Only add separators for direct IFS arguments, not nested functions
                 if (function_stack and function_stack[-1] in ['IFS', 'SWITCH'] and 
-                    ifs_arg_stack and ifs_arg_stack[-1] > 0 and ifs_arg_stack[-1] % 2 == 0):  # Before condition (even positions after first)
+                    ifs_arg_stack and ifs_depth_stack and
+                    paren_depth == ifs_depth_stack[-1] and  # Only at direct IFS level
+                    ifs_arg_stack[-1] > 0 and ifs_arg_stack[-1] % 2 == 0):  # Before condition
                     lines.append("")  # Blank line  
-                    lines.append(self._indent(depth) + f"// ── CASE/RESULT PAIR ── DEBUG: other count={ifs_arg_stack[-1]}")
+                    lines.append(self._indent(depth) + "// ── CASE/RESULT PAIR ──")
                 
                 current_line += token_text
                 
@@ -395,15 +417,7 @@ class ExcelFormulaFormatter:
         
         return False
     
-    def _peek_next_meaningful_token(self, tokens: list, start_index: int) -> tuple:
-        """Peek ahead to find the next non-whitespace, meaningful token."""
-        i = start_index
-        while i < len(tokens):
-            token_type, token_text = tokens[i]
-            if token_type != 'whitespace' and token_text.strip():
-                return tokens[i]
-            i += 1
-        return None
+    def _should_keep_inline(self, tokens: list, paren_index: int) -> bool:
         """Determine if a function call should be kept inline."""
         if paren_index >= len(tokens) or tokens[paren_index][1] != '(':
             return False
@@ -440,7 +454,7 @@ class ExcelFormulaFormatter:
         arg_count += 1  # Add 1 for the last argument (no comma after it)
         
         # Criteria for keeping inline:
-        # 1. Simple functions (LEN, TRIM, etc.) with 1 argument
+        # 1. Simple functions with 1 argument
         simple_functions = {'LEN', 'TRIM', 'UPPER', 'LOWER', 'ABS', 'INT', 'ROUND'}
         if function_name in simple_functions and arg_count == 1 and not has_nested_functions:
             return True
@@ -499,10 +513,8 @@ class ExcelFormulaFormatter:
     def _transform_js_to_excel(self, js_text: str) -> str:
         """Transform JavaScript-like syntax back to Excel."""
         # Remove quotes from cell references - need to be more careful here
-        # First, find all quoted strings that match cell reference patterns
         def unquote_cell_ref(match):
             quoted_text = match.group(0)
-            # Remove outer quotes
             inner_text = quoted_text[1:-1]
             # Check if the inner text is actually a cell reference
             if cell_ref_all_rgx.match(inner_text):
@@ -516,10 +528,7 @@ class ExcelFormulaFormatter:
         # Convert != back to <>
         result = js_not_equal_rgx.sub('<>', result)
         
-        # Clean up extra spaces around operators - but be more careful
-        # Don't remove spaces inside string literals
-        
-        # First, temporarily replace string literals with placeholders
+        # Temporarily replace string literals with placeholders
         string_parts = []
         def replace_string(match):
             string_parts.append(match.group(0))
@@ -527,7 +536,7 @@ class ExcelFormulaFormatter:
         
         result = re.sub(r'"[^"]*"', replace_string, result)
         
-        # Now clean up operators (avoiding the string placeholders)
+        # Clean up operators (avoiding the string placeholders)
         result = re.sub(r'\s*([+\-*/=<>!,()])\s*', r'\1', result)
         result = re.sub(r'\s*(<>|>=|<=)\s*', r'\1', result)
         
