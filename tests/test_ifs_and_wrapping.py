@@ -60,7 +60,7 @@ def test_and_natural_wrapping():
 
 
 def test_simple_ifs():
-    """Test simple IFS function with case/result pair separators."""
+    """Test simple IFS function with case/result pair separators.""" 
     formatter = ExcelFormulaFormatter()
     original = '=IFS(A1>0,"Positive",A1<0,"Negative",TRUE,"Zero")'
     
@@ -129,9 +129,9 @@ def test_complex_ifs_with_and():
     return success
 
 
-def test_modular_ifs_python():
-    """Test IFS with Python modular formatter."""
-    formatter = ModularExcelFormatter.create_python_formatter()
+def test_modular_ifs_plain():
+    """Test IFS with Plain modular formatter."""
+    formatter = ModularExcelFormatter.create_plain_formatter()
     original = '=IFS(A1>0,"High",A1<0,"Low",TRUE,"Medium")'
     
     folded = formatter.fold_formula(original)
@@ -142,9 +142,9 @@ def test_modular_ifs_python():
     print(f"Unfolded: {unfolded}")
     print()
     
-    # Check for Python-style case/result pair separators (using # comments)
+    # Check for Plain-style case/result pair separators (using // comments)
     lines = folded.split('\n')
-    has_pair_separators = any('CASE/RESULT PAIR' in line and '#' in line for line in lines)
+    has_pair_separators = any('CASE/RESULT PAIR' in line and '//' in line for line in lines)
     
     # Check round-trip
     original_norm = original[1:] if original.startswith('=') else original
@@ -152,7 +152,7 @@ def test_modular_ifs_python():
     round_trip_success = original_norm.replace(' ', '') == unfolded_norm.replace(' ', '')
     
     success = has_pair_separators and round_trip_success
-    print(f"Has Python case/result pair separators: {has_pair_separators}")
+    print(f"Has Plain case/result pair separators: {has_pair_separators}")
     print(f"Round-trip success: {round_trip_success}")
     print(f"Overall success: {success}")
     return success
@@ -197,7 +197,7 @@ def main():
         ("AND Natural Wrapping", test_and_natural_wrapping),
         ("Simple IFS Cases", test_simple_ifs),
         ("Complex IFS with AND", test_complex_ifs_with_and),
-        ("Modular IFS (Python)", test_modular_ifs_python),
+        ("Modular IFS (Plain)", test_modular_ifs_plain),
         ("SWITCH Function", test_switch_function)
     ]
     

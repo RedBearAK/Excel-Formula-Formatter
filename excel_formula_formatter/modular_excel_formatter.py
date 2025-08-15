@@ -11,13 +11,62 @@ import re
 from excel_formula_formatter.excel_formula_patterns import (
     cell_ref_all_rgx, excel_functions_rgx, string_literal_rgx, 
     number_rgx, comment_line_rgx, inline_comment_rgx, 
-    whitespace_newline_rgx, leading_trailing_space_rgx
+    whitespace_newline_rgx, leading_trailing_space_rgx,
+    line_comment_removal_rgx, space_cleanup_operators_rgx,
+    space_cleanup_multi_char_rgx, space_cleanup_whitespace_rgx
 )
 
 from excel_formula_formatter.syntax_translator_base import SyntaxTranslatorBase
 from excel_formula_formatter.javascript_translator import JavaScriptTranslator
-from excel_formula_formatter.python_translator import PythonTranslator
-from excel_formula_formatter.css_translator import CSSTranslator
+
+
+class PlainTranslator(SyntaxTranslatorBase):
+    """Plain Excel translator that preserves original syntax with smart indenting only."""
+    
+    def get_language_name(self) -> str:
+        return "Excel"
+    
+    def get_file_extension(self) -> str:
+        return ".txt"
+    
+    def format_header_comment(self) -> str:
+        return "// Excel Formula (plain Excel syntax with smart indenting)"
+    
+    def format_section_comment(self, comment: str) -> str:
+        return f"// {comment}"
+    
+    def format_function_call(self, function_name: str) -> str:
+        return function_name  # Keep original case and format
+    
+    def format_cell_reference(self, cell_ref: str) -> str:
+        return cell_ref  # Keep unquoted
+    
+    def format_string_literal(self, string_val: str) -> str:
+        return string_val  # Already quoted
+    
+    def format_number(self, number_val: str) -> str:
+        return number_val
+    
+    def format_operator(self, operator: str) -> str:
+        # Keep Excel operators as-is, just add spacing
+        return f' {operator} '
+    
+    def format_punctuation(self, punct: str) -> str:
+        return punct
+    
+    def reverse_parse_line(self, line: str) -> str:
+        """Remove comments and return clean line."""
+        # Remove comments using the imported pattern
+        line = line_comment_removal_rgx.sub('', line)
+        return line.strip()
+    
+    def reverse_parse_cell_reference(self, text: str) -> str:
+        """No conversion needed for plain format."""
+        return text
+    
+    def reverse_parse_operator(self, text: str) -> str:
+        """No conversion needed for plain format."""
+        return text
 
 
 class ModularExcelFormatter:
@@ -32,14 +81,9 @@ class ModularExcelFormatter:
         return cls(JavaScriptTranslator())
     
     @classmethod  
-    def create_python_formatter(cls):
-        """Create formatter with Python translator."""
-        return cls(PythonTranslator())
-    
-    @classmethod
-    def create_css_formatter(cls):
-        """Create formatter with CSS translator.""" 
-        return cls(CSSTranslator())
+    def create_plain_formatter(cls):
+        """Create formatter with Plain Excel translator (smart indenting only)."""
+        return cls(PlainTranslator())
     
     def fold_formula(self, formula: str) -> str:
         """Transform Excel formula using the configured translator."""
@@ -79,10 +123,6 @@ class ModularExcelFormatter:
         # Remove all comments first
         no_comments = comment_line_rgx.sub('', formatted_text)
         no_comments = inline_comment_rgx.sub('', no_comments)
-        
-        # Remove CSS-style comments if CSS translator
-        if isinstance(self.translator, CSSTranslator):
-            no_comments = re.sub(r'/\*.*?\*/', '', no_comments, flags=re.DOTALL)
         
         # Flatten to single line
         single_line = whitespace_newline_rgx.sub(' ', no_comments)
@@ -138,8 +178,14 @@ class ModularExcelFormatter:
                     i += 2
                     continue
             
-            # Check for single character operators and punctuation
-            if formula[i] in '+-*/=<>(),[]:;!&%^':
+            # Check for single character operators (separate from punctuation)
+            if formula[i] in '+-*/=<>&':
+                tokens.append(('operator', formula[i]))
+                i += 1
+                continue
+            
+            # Check for punctuation
+            if formula[i] in '(),[]:;!%^':
                 tokens.append(('punctuation', formula[i]))
                 i += 1
                 continue
@@ -214,7 +260,7 @@ class ModularExcelFormatter:
                         current_line = ""
                     
                     lines.extend(func_lines)
-                    i = end_index
+                    i = end_index - 1  # Point to position that will be incremented
                 else:
                     # Function without parentheses - treat as identifier
                     current_line += self.translator.format_function_call(token_text)
@@ -370,46 +416,70 @@ class ModularExcelFormatter:
             lines.append(self.translator.indent(base_depth) + func_str)
             return lines
         
-        # Check if we should keep inline - increased threshold for better use of line width
-        total_length = sum(len(self._tokens_to_string(group)) for group in argument_groups)
+        # Convert argument groups to strings
+        arg_strings = []
+        for group in argument_groups:
+            arg_str = self._tokens_to_string(group).strip()
+            if arg_str:
+                arg_strings.append(arg_str)
         
-        if len(argument_groups) <= 2 and total_length < 65:
-            # Keep inline
-            func_str = self.translator.format_function_call(func_name) + self.translator.format_punctuation('(') + "  "
-            
-            for arg_index, arg_group in enumerate(argument_groups):
-                arg_str = self._tokens_to_string(arg_group).strip()
-                if arg_str:  # Only add non-empty arguments
-                    func_str += arg_str
-                    if arg_index < len(argument_groups) - 1:
-                        func_str += ", "
-            
-            func_str += "  " + self.translator.format_punctuation(')')
+        if not arg_strings:
+            # No valid arguments
+            func_str = self.translator.format_function_call(func_name) + self.translator.format_punctuation('(') + self.translator.format_punctuation(')')
             lines.append(self.translator.indent(base_depth) + func_str)
+            return lines
+        
+        # Try to fit everything on one line first
+        single_line_content = ", ".join(arg_strings)
+        single_line = (self.translator.format_function_call(func_name) + 
+                      self.translator.format_punctuation('(') + "  " + 
+                      single_line_content + "  " + 
+                      self.translator.format_punctuation(')'))
+        
+        # Check if single line fits (account for indentation)
+        indented_single_line = self.translator.indent(base_depth) + single_line
+        if len(indented_single_line) <= 79:
+            lines.append(indented_single_line)
+            return lines
+        
+        # Multi-line with natural wrapping - pack as many arguments per line as fit
+        lines.append(self.translator.indent(base_depth) + 
+                    self.translator.format_function_call(func_name) + 
+                    self.translator.format_punctuation('(') + "  " + arg_strings[0])
+        
+        # Natural wrapping for remaining arguments
+        current_line = self.translator.indent(base_depth + 1)
+        line_arg_count = 0
+        
+        for arg_index in range(1, len(arg_strings)):
+            arg_str = arg_strings[arg_index]
+            
+            # Check if adding this argument would make the line too long (account for indentation)
+            test_line = current_line
+            if line_arg_count > 0:
+                test_line += ", "
+            test_line += arg_str
+            
+            if len(test_line) <= 75 and line_arg_count < 3:  # Max 3 args per continuation line
+                # Add to current line
+                if line_arg_count > 0:
+                    current_line += ", "
+                current_line += arg_str
+                line_arg_count += 1
+            else:
+                # Finish current line and start new one
+                if line_arg_count > 0:
+                    current_line += ","
+                    lines.append(current_line)
+                current_line = self.translator.indent(base_depth + 1) + arg_str
+                line_arg_count = 1
+        
+        # Finish the last line and add closing paren
+        if line_arg_count > 0:
+            current_line += "  " + self.translator.format_punctuation(')')
+            lines.append(current_line)
         else:
-            # Multi-line with natural wrapping - keep function name with first argument
-            first_arg = self._tokens_to_string(argument_groups[0]).strip() if argument_groups else ""
-            
-            # Start with function name and first argument on same line
-            first_line = (self.translator.format_function_call(func_name) + 
-                         self.translator.format_punctuation('(') + "  " + first_arg)
-            
-            if len(argument_groups) > 1:
-                first_line += ","
-            
-            lines.append(self.translator.indent(base_depth) + first_line)
-            
-            # Add remaining arguments with proper indentation
-            for arg_index in range(1, len(argument_groups)):
-                arg_str = self._tokens_to_string(argument_groups[arg_index]).strip()
-                
-                if arg_str:  # Only add non-empty arguments
-                    arg_line = self.translator.indent(base_depth + 1) + arg_str
-                    if arg_index < len(argument_groups) - 1:
-                        arg_line += ","
-                    lines.append(arg_line)
-            
-            # Closing parenthesis with internal spacing - keeps the "  )" together
+            # This shouldn't happen, but just in case
             lines.append(self.translator.indent(base_depth) + "  " + self.translator.format_punctuation(')'))
         
         return lines
@@ -497,8 +567,6 @@ class ModularExcelFormatter:
             elif token_type == 'number':
                 result += self.translator.format_number(token_text)
             elif token_type == 'operator':
-                # Let the translator handle ALL operator formatting consistently
-                # Don't override - the translator already handles spacing properly
                 result += self.translator.format_operator(token_text)
             elif token_type == 'function':
                 result += self.translator.format_function_call(token_text)
@@ -531,11 +599,72 @@ class ModularExcelFormatter:
             result = self.translator.reverse_parse_values(result)
         
         # Clean up spaces and syntax
-        result = re.sub(r'\s*([+\-*/=<>!,()])\s*', r'\1', result)
-        result = re.sub(r'\s*(<>|>=|<=)\s*', r'\1', result)
-        result = re.sub(r'\s+', ' ', result)
+        result = space_cleanup_operators_rgx.sub(r'\1', result)
+        result = space_cleanup_multi_char_rgx.sub(r'\1', result)
+        result = space_cleanup_whitespace_rgx.sub(' ', result)
         
         return result.strip()
+
+
+def detect_current_mode(text: str) -> str:
+    """Detect what formatter mode the text is currently in."""
+    if not text or not text.strip():
+        return 'unknown'
+    
+    lines = text.strip().split('\n')
+    
+    # Single line is likely unfolded (plain Excel)
+    if len(lines) == 1:
+        return 'plain'
+    
+    # Check for mode indicators
+    text_content = '\n'.join(lines)
+    
+    if '//' in text_content and 'JavaScript syntax' in text_content:
+        return 'javascript'
+    elif '//' in text_content and 'plain Excel syntax' in text_content:
+        return 'plain'  
+    elif any(line.startswith('    ') or line.startswith('\t') for line in lines):
+        # Has indentation but no clear mode indicators - assume javascript as most common
+        return 'javascript'
+    
+    return 'plain'  # Default to plain if uncertain
+
+
+def safe_mode_switch(text: str, current_mode: str, target_mode: str, should_refold: bool = False) -> str:
+    """Safely switch between formatter modes by unfolding first."""
+    if not text or not text.strip():
+        return ""
+    
+    if current_mode == target_mode:
+        return text  # No change needed
+    
+    # Step 1: Unfold using current mode formatter
+    if current_mode == 'javascript':
+        current_formatter = ModularExcelFormatter.create_javascript_formatter()
+    elif current_mode == 'plain':
+        current_formatter = ModularExcelFormatter.create_plain_formatter()
+    else:
+        # Unknown mode - try to auto-detect and unfold
+        return auto_format_with_translator(text, target_mode)
+    
+    # Unfold to get clean Excel formula
+    unfolded = current_formatter.unfold_formula(text)
+    
+    # Step 2: If requested, fold using target mode formatter
+    if should_refold:
+        if target_mode == 'javascript':
+            target_formatter = ModularExcelFormatter.create_javascript_formatter()
+        elif target_mode == 'plain':
+            target_formatter = ModularExcelFormatter.create_plain_formatter()
+        else:
+            # Invalid target mode, return unfolded
+            return unfolded
+        
+        return target_formatter.fold_formula(unfolded)
+    else:
+        # Just return unfolded - user can re-fold manually if desired
+        return unfolded
 
 
 def auto_format_with_translator(input_text: str, translator_name: str = 'javascript') -> str:
@@ -546,10 +675,8 @@ def auto_format_with_translator(input_text: str, translator_name: str = 'javascr
     # Create formatter with specified translator
     if translator_name == 'javascript':
         formatter = ModularExcelFormatter.create_javascript_formatter()
-    elif translator_name == 'python':
-        formatter = ModularExcelFormatter.create_python_formatter()
-    elif translator_name == 'css':
-        formatter = ModularExcelFormatter.create_css_formatter()
+    elif translator_name == 'plain':
+        formatter = ModularExcelFormatter.create_plain_formatter()
     else:
         formatter = ModularExcelFormatter.create_javascript_formatter()  # Default
     
@@ -567,13 +694,11 @@ def auto_format_with_translator(input_text: str, translator_name: str = 'javascr
     # Multi-line - check if it's already folded or needs unfolding  
     else:
         # Look for folded indicators (comments, indentation)
-        has_js_comments = any('//' in line for line in lines)
-        has_py_comments = any('#' in line for line in lines)
-        has_css_comments = any('/*' in line for line in lines)
+        has_js_comments = any('//' in line and 'JavaScript syntax' in line for line in lines)
+        has_plain_comments = any('//' in line and 'plain Excel syntax' in line for line in lines)
         has_indentation = any(line.startswith('    ') or line.startswith('\t') for line in lines)
-        has_excel_header = any('Excel Formula' in line for line in lines)
         
-        if has_js_comments or has_py_comments or has_css_comments or has_indentation or has_excel_header:
+        if has_js_comments or has_plain_comments or has_indentation:
             # Appears to be folded - unfold it
             return formatter.unfold_formula(input_text)
         else:
@@ -590,24 +715,24 @@ def main():
     """Main function for command line usage.""" 
     if len(sys.argv) < 2:
         print("Usage: python modular_excel_formatter.py <translator> [fold|unfold|auto]", file=sys.stderr)
-        print("  translator: javascript, python, css", file=sys.stderr)
+        print("  translator: javascript, plain", file=sys.stderr)
         print("  operation: fold, unfold, or auto (default)", file=sys.stderr)
+        print("  javascript: JavaScript-like syntax for highlighting", file=sys.stderr)
+        print("  plain: Pure Excel syntax with smart indenting", file=sys.stderr)
         return 1
     
     translator_name = sys.argv[1].lower()
     operation = sys.argv[2].lower() if len(sys.argv) > 2 else 'auto'  # Default to auto
     
-    if translator_name not in ['javascript', 'python', 'css']:
+    if translator_name not in ['javascript', 'plain']:
         print(f"Unknown translator: {translator_name}", file=sys.stderr)
-        print("Available translators: javascript, python, css", file=sys.stderr)
+        print("Available translators: javascript, plain", file=sys.stderr)
         return 1
     
     if translator_name == 'javascript':
         formatter = ModularExcelFormatter.create_javascript_formatter()
-    elif translator_name == 'python':
-        formatter = ModularExcelFormatter.create_python_formatter()
-    elif translator_name == 'css':
-        formatter = ModularExcelFormatter.create_css_formatter()
+    elif translator_name == 'plain':
+        formatter = ModularExcelFormatter.create_plain_formatter()
     
     input_text = sys.stdin.read()
     if not input_text.strip():

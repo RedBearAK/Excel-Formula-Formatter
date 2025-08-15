@@ -30,6 +30,14 @@ js_not_equal_rgx = re.compile(r'!=')
 comment_line_rgx = re.compile(r'^\s*(?://|#).*$', re.MULTILINE)
 inline_comment_rgx = re.compile(r'\s*(?://|#).*$')
 
+# Specific pattern for line-level comment removal in translators
+line_comment_removal_rgx = re.compile(r'\s*//.*$')
+
+# Cleanup patterns for reverse parsing
+space_cleanup_operators_rgx = re.compile(r'\s*([+\-*/=<>!&,()])\s*')
+space_cleanup_multi_char_rgx = re.compile(r'\s*(<>|>=|<=)\s*')
+space_cleanup_whitespace_rgx = re.compile(r'\s+')
+
 # Whitespace and newline patterns
 whitespace_newline_rgx = re.compile(r'\s*\r?\n\s*')
 leading_trailing_space_rgx = re.compile(r'^\s+|\s+$')
