@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Excel formula formatter with reversible JavaScript-like syntax transformation.
-File: excel_formula_formatter.py
+File: excel_formula_formatter/excel_formula_formatter.py
 """
 
 import sys
@@ -162,6 +162,9 @@ class ExcelFormulaFormatter:
         current_line = ""
         depth = 0
         depth_stack = []  # Track whether each depth level is inline or multiline
+        function_stack = []  # Track function names for special handling
+        let_arg_count = 0  # Track argument position in LET functions
+        ifs_arg_stack = []  # Stack of argument counts for nested IFS/SWITCH functions
         
         # Add header comment
         lines.append("// Excel Formula (JavaScript syntax for highlighting)")
@@ -173,8 +176,27 @@ class ExcelFormulaFormatter:
             if token_type == 'punctuation' and token_text == '(':
                 current_line += token_text
                 
+                # Check what function we're entering
+                if i > 0 and tokens[i-1][0] == 'function':
+                    func_name = tokens[i-1][1].upper()
+                    function_stack.append(func_name)
+                    if func_name == 'LET':
+                        let_arg_count = 0
+                    elif func_name in ['IFS', 'SWITCH']:
+                        ifs_arg_stack.append(0)  # Push new counter for this IFS level
+                else:
+                    function_stack.append('')
+                
+                # Check if this should use natural wrapping (AND, OR, etc.)
+                should_natural_wrap = self._should_use_natural_wrapping(tokens, i)
+                
                 # Look ahead to determine if this should be a simple one-liner
-                if self._should_keep_inline(tokens, i):
+                if should_natural_wrap:
+                    # Use natural wrapping for AND/OR functions
+                    depth_stack.append('natural_wrap')
+                    current_line += "  "  # Add 2 spaces after opening paren
+                    
+                elif self._should_keep_inline(tokens, i):
                     # Keep this function call inline - don't change depth or break line
                     depth_stack.append('inline')
                     i += 1
@@ -208,6 +230,7 @@ class ExcelFormulaFormatter:
                     # Add the inline content and closing paren
                     current_line += inline_content + ')'
                     depth_stack.pop()  # Remove the inline marker
+                    function_stack.pop()  # Remove function from stack
                     i -= 1  # Back up one since the loop will increment
                 else:
                     # Multi-line function call
@@ -217,8 +240,13 @@ class ExcelFormulaFormatter:
                     depth += 1
                 
             elif token_type == 'punctuation' and token_text == ')':
-                # Check if this closing paren belongs to an inline or multiline context
-                if depth_stack and depth_stack[-1] == 'inline':
+                # Check context for closing behavior
+                if depth_stack and depth_stack[-1] == 'natural_wrap':
+                    # Natural wrapping: add 2 spaces before closing paren
+                    current_line += "  )"
+                    depth_stack.pop()
+                    function_stack.pop()
+                elif depth_stack and depth_stack[-1] == 'inline':
                     # This shouldn't happen with our new logic, but just in case
                     current_line += token_text
                     depth_stack.pop()
@@ -245,21 +273,60 @@ class ExcelFormulaFormatter:
                     current_line = ""
                     if depth_stack:
                         depth_stack.pop()
+                    if function_stack:
+                        # Check if we're exiting an IFS/SWITCH function
+                        if function_stack[-1] in ['IFS', 'SWITCH'] and ifs_arg_stack:
+                            ifs_arg_stack.pop()
+                        function_stack.pop()
                 
             elif token_type == 'punctuation' and token_text == ',':
-                # Only handle commas that aren't already handled above
-                current_line += token_text
+                # Handle commas based on context
+                if depth_stack and depth_stack[-1] == 'natural_wrap':
+                    # Natural wrapping: add comma + space, check if line is too long
+                    current_line += ', '
+                    if len(current_line) > 70:  # Line length threshold (reduced for better wrapping)
+                        self._add_line_if_not_empty(lines, current_line.rstrip(', ') + ',', depth)
+                        current_line = self._indent(depth + 1)
                 
-                # Check if we're in a multiline context (depth > 0 and not all inline)
-                if depth > 0:
-                    # Multi-line context - break line
+                elif function_stack and 'LET' in function_stack:
+                    # Keep comma attached to what comes before it
+                    current_line += token_text
+                    let_arg_count += 1
+                    # In LET: keep pairs together (name, value on same line)
+                    # Break line only after every second argument (after the value)
+                    if let_arg_count % 2 == 0:  # After value (even numbered args)
+                        self._add_line_if_not_empty(lines, current_line, depth)
+                        current_line = ""
+                    else:  # After variable name (odd numbered args)
+                        current_line += " "
+                
+                elif function_stack and function_stack[-1] in ['IFS', 'SWITCH']:
+                    # IFS/SWITCH: Always break line after comma for clean separation
+                    current_line += token_text
+                    self._add_line_if_not_empty(lines, current_line, depth)
+                    current_line = ""
+                    # Increment the argument count for the current IFS level
+                    if ifs_arg_stack:
+                        ifs_arg_stack[-1] += 1
+                        # Debug: show which level we're incrementing
+                        lines.append(self._indent(depth) + f"// DEBUG: comma increment level={len(ifs_arg_stack)} count={ifs_arg_stack[-1]} func_stack={function_stack}")
+                
+                elif depth > 0:
+                    # Multi-line context (but not LET or IFS) - break line
+                    current_line += token_text
                     self._add_line_if_not_empty(lines, current_line, depth)
                     current_line = ""
                 else:
                     # Top level or inline context - just add space
-                    current_line += ' '
+                    current_line += token_text + ' '
                 
             elif token_type == 'cell_ref':
+                # Add separator before conditions in IFS/SWITCH (cell references can be conditions)
+                if (function_stack and function_stack[-1] in ['IFS', 'SWITCH'] and 
+                    ifs_arg_stack and ifs_arg_stack[-1] > 0 and ifs_arg_stack[-1] % 2 == 0):  # Before condition (even positions after first)
+                    lines.append("")  # Blank line
+                    lines.append(self._indent(depth) + f"// ── CASE/RESULT PAIR ── DEBUG: cell_ref count={ifs_arg_stack[-1]}")
+                
                 # Quote cell references for string highlighting
                 current_line += f'"{token_text}"'
                 
@@ -271,20 +338,38 @@ class ExcelFormulaFormatter:
                 current_line += f' {token_text} '
                 
             elif token_type == 'function':
-                # Add comment for function sections only for complex functions
-                if current_line.strip():
-                    self._add_line_if_not_empty(lines, current_line, depth)
-                    current_line = ""
-                
                 # Look ahead to see if this will be inline or multiline
-                if not self._should_keep_inline(tokens, i + 1):  # +1 because next token should be '('
-                    comment = self._get_function_comment(token_text)
-                    if comment:
-                        lines.append(self._indent(depth) + f"// {comment}")
+                will_be_inline = self._should_keep_inline(tokens, i + 1)
+                will_natural_wrap = self._should_use_natural_wrapping(tokens, i + 1)
+                
+                # Add comment for function sections only for complex functions
+                # Suppress generic comments when inside IFS/SWITCH
+                if not will_be_inline and not will_natural_wrap:
+                    should_suppress_comment = (function_stack and 
+                                             any(f in ['IFS', 'SWITCH'] for f in function_stack))
+                    
+                    if not should_suppress_comment:
+                        if current_line.strip():
+                            self._add_line_if_not_empty(lines, current_line, depth)
+                            current_line = ""
+                        
+                        comment = self._get_function_comment(token_text)
+                        if comment:
+                            lines.append(self._indent(depth) + f"// {comment}")
+                
+                # Add first case separator ONLY for the IFS/SWITCH function itself
+                if token_text.upper() in ['IFS', 'SWITCH']:
+                    lines.append(self._indent(depth) + "// ── CASE/RESULT PAIR ──")
                 
                 current_line += token_text
                 
             else:
+                # Add separator before conditions in IFS/SWITCH (for literals, identifiers, etc.)
+                if (function_stack and function_stack[-1] in ['IFS', 'SWITCH'] and 
+                    ifs_arg_stack and ifs_arg_stack[-1] > 0 and ifs_arg_stack[-1] % 2 == 0):  # Before condition (even positions after first)
+                    lines.append("")  # Blank line  
+                    lines.append(self._indent(depth) + f"// ── CASE/RESULT PAIR ── DEBUG: other count={ifs_arg_stack[-1]}")
+                
                 current_line += token_text
                 
             i += 1
@@ -294,7 +379,31 @@ class ExcelFormulaFormatter:
         
         return lines
     
-    def _should_keep_inline(self, tokens: list, paren_index: int) -> bool:
+    def _should_use_natural_wrapping(self, tokens: list, paren_index: int) -> bool:
+        """Determine if a function should use natural length-based wrapping."""
+        if paren_index >= len(tokens) or tokens[paren_index][1] != '(':
+            return False
+        
+        # Look at the function name before the parenthesis
+        if paren_index > 0:
+            prev_token = tokens[paren_index - 1]
+            if prev_token[0] == 'function':
+                function_name = prev_token[1].upper()
+                # Functions that should use natural wrapping
+                natural_wrap_functions = {'AND', 'OR'}
+                return function_name in natural_wrap_functions
+        
+        return False
+    
+    def _peek_next_meaningful_token(self, tokens: list, start_index: int) -> tuple:
+        """Peek ahead to find the next non-whitespace, meaningful token."""
+        i = start_index
+        while i < len(tokens):
+            token_type, token_text = tokens[i]
+            if token_type != 'whitespace' and token_text.strip():
+                return tokens[i]
+            i += 1
+        return None
         """Determine if a function call should be kept inline."""
         if paren_index >= len(tokens) or tokens[paren_index][1] != '(':
             return False

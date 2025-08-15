@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Excel formula regex patterns module.
-File: excel_formula_patterns.py
+File: excel_formula_formatter/excel_formula_patterns.py
 """
 
 import re
@@ -26,9 +26,9 @@ number_rgx = re.compile(r'\b\d+(?:\.\d+)?\b')
 excel_not_equal_rgx = re.compile(r'<>')
 js_not_equal_rgx = re.compile(r'!=')
 
-# Comment patterns for removal during unfold
-comment_line_rgx = re.compile(r'^\s*//.*$', re.MULTILINE)
-inline_comment_rgx = re.compile(r'\s*//.*$')
+# Comment patterns for removal during unfold - support both // and # comments
+comment_line_rgx = re.compile(r'^\s*(?://|#).*$', re.MULTILINE)
+inline_comment_rgx = re.compile(r'\s*(?://|#).*$')
 
 # Whitespace and newline patterns
 whitespace_newline_rgx = re.compile(r'\s*\r?\n\s*')

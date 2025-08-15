@@ -336,11 +336,12 @@ class EnhancedSimpleExcelEditor:
             "plain": PlainExcelFormatter()
         }
         
+
     def show_header(self):
         """Display header with instructions and current mode."""
-        header = Table.grid(padding=0)  # Remove padding between rows
-        header.add_column(style="bold blue")
-        header.add_column(style="bold green")
+        header = Table.grid(padding=0)  # padding= adds blank lines between rows, keep at 0
+        header.add_column(style="bold blue", min_width=26)  # Set minimum width for first column
+        header.add_column(style="bold green", min_width=26)  # Set minimum width for second column
         
         header.add_row("📊 Excel Formula Editor", f"Current Mode: {self.current_mode.title()}")
         header.add_row("Main Commands:", "Mode Commands:")
@@ -352,10 +353,10 @@ class EnhancedSimpleExcelEditor:
         header.add_row("Q = Quit", "")
         
         return Panel(header, title="Excel Formula Terminal Editor", border_style="blue")
-    
+
     def show_mode_info(self):
         """Show information about available modes."""
-        mode_info = Table.grid(padding=1)
+        mode_info = Table.grid(padding=0)  # padding= adds blank lines between rows, keep at 0
         mode_info.add_column(style="bold yellow")
         mode_info.add_column(style="white")
         

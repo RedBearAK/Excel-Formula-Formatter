@@ -174,6 +174,11 @@ class ModularExcelFormatter:
         current_line = ""
         depth = 0
         depth_stack = []  # Track whether each depth level is inline or multiline
+        function_stack = []  # Track function names for special handling
+        let_arg_count = 0  # Track argument position in LET functions
+        ifs_arg_stack = []  # Stack of argument counts for nested IFS/SWITCH functions
+        ifs_depth_stack = []  # Track parentheses depth for each IFS level
+        paren_depth = 0  # Global parentheses depth counter
         
         # Add header comment
         lines.append(self.translator.format_header_comment())
@@ -185,11 +190,30 @@ class ModularExcelFormatter:
             if token_type == 'punctuation' and token_text == '(':
                 formatted_punct = self.translator.format_punctuation(token_text)
                 current_line += formatted_punct
+                paren_depth += 1
+                
+                # Check what function we're entering
+                if i > 0 and tokens[i-1][0] == 'function':
+                    func_name = tokens[i-1][1].upper()
+                    function_stack.append(func_name)
+                    if func_name == 'LET':
+                        let_arg_count = 0
+                    elif func_name in ['IFS', 'SWITCH']:
+                        ifs_arg_stack.append(0)  # Push new counter for this IFS level
+                        ifs_depth_stack.append(paren_depth)  # Track the depth where this IFS starts
+                else:
+                    function_stack.append('')
+                
+                # Check if this should use natural wrapping (AND, OR, etc.)
+                should_natural_wrap = self._should_use_natural_wrapping(tokens, i)
                 
                 # Look ahead to determine if this should be inline (simplified for modular)
-                should_inline = self._should_keep_simple_inline(tokens, i)
-                
-                if should_inline:
+                if should_natural_wrap:
+                    # Use natural wrapping for AND/OR functions
+                    depth_stack.append('natural_wrap')
+                    current_line += "  "  # Add 2 spaces after opening paren
+                    
+                elif self._should_keep_simple_inline(tokens, i):
                     # Keep this function call inline
                     depth_stack.append('inline')
                     i += 1
@@ -225,6 +249,7 @@ class ModularExcelFormatter:
                     # Add the inline content and closing paren
                     current_line += inline_content + self.translator.format_punctuation(')')
                     depth_stack.pop()
+                    function_stack.pop()
                     i -= 1  # Back up one since the loop will increment
                 else:
                     # Multi-line function call
@@ -234,8 +259,15 @@ class ModularExcelFormatter:
                     depth += 1
                 
             elif token_type == 'punctuation' and token_text == ')':
-                # Check if this closing paren belongs to an inline or multiline context
-                if depth_stack and depth_stack[-1] == 'inline':
+                paren_depth -= 1
+                
+                # Check context for closing behavior
+                if depth_stack and depth_stack[-1] == 'natural_wrap':
+                    # Natural wrapping: add 2 spaces before closing paren
+                    current_line += "  " + self.translator.format_punctuation(token_text)
+                    depth_stack.pop()
+                    function_stack.pop()
+                elif depth_stack and depth_stack[-1] == 'inline':
                     # This shouldn't happen with our new logic
                     formatted_punct = self.translator.format_punctuation(token_text)
                     current_line += formatted_punct
@@ -262,23 +294,75 @@ class ModularExcelFormatter:
                     current_line = ""
                     if depth_stack:
                         depth_stack.pop()
+                    if function_stack:
+                        # Check if we're exiting an IFS/SWITCH function and clean up stacks
+                        if function_stack[-1] in ['IFS', 'SWITCH'] and ifs_arg_stack and ifs_depth_stack:
+                            # Only pop if we're at the right depth level for this IFS
+                            if ifs_depth_stack[-1] == paren_depth + 1:  # +1 because we already decremented paren_depth
+                                ifs_arg_stack.pop()
+                                ifs_depth_stack.pop()
+                        function_stack.pop()
                 
             elif token_type == 'punctuation' and token_text == ',':
-                # Only handle commas that aren't already handled above
+                # Handle commas based on context
                 formatted_punct = self.translator.format_punctuation(token_text)
-                current_line += formatted_punct
                 
-                # Check if we're in a multiline context
-                if depth > 0:
-                    # Multi-line context - break line
+                if depth_stack and depth_stack[-1] == 'natural_wrap':
+                    # Natural wrapping: add comma + space, check if line is too long
+                    current_line += ', '
+                    if len(current_line) > 70:  # Line length threshold (reduced for better wrapping)
+                        self._add_line_if_not_empty(lines, current_line.rstrip(', ') + ',', depth)
+                        current_line = self.translator.indent(depth + 1)
+                
+                elif function_stack and 'LET' in function_stack:
+                    # Keep comma attached to what comes before it
+                    current_line += formatted_punct
+                    let_arg_count += 1
+                    # In LET: keep pairs together (name, value on same line)
+                    # Break line only after every second argument (after the value)
+                    if let_arg_count % 2 == 0:  # After value (even numbered args)
+                        self._add_line_if_not_empty(lines, current_line, depth)
+                        current_line = ""
+                    else:  # After variable name (odd numbered args)
+                        current_line += " "
+                
+                elif ifs_arg_stack and ifs_depth_stack:
+                    # Check if this comma is at the direct level of any IFS function
+                    ifs_found = False
+                    for idx, ifs_start_depth in enumerate(ifs_depth_stack):
+                        if paren_depth == ifs_start_depth:  # This comma is direct to this IFS level
+                            # Always break line after comma in IFS/SWITCH for clean separation
+                            current_line += formatted_punct
+                            self._add_line_if_not_empty(lines, current_line, depth)
+                            current_line = ""
+                            # Increment the argument count for this specific IFS level
+                            ifs_arg_stack[idx] += 1
+                            ifs_found = True
+                            break
+                    
+                    if not ifs_found:
+                        # This comma is not direct to any IFS (it's inside a nested function)
+                        current_line += formatted_punct + ' '
+                
+                elif depth > 0:
+                    # Multi-line context (but not LET or IFS) - break line
+                    current_line += formatted_punct
                     self._add_line_if_not_empty(lines, current_line, depth)
                     current_line = ""
                 else:
                     # Top level - just add space for some translators
+                    current_line += formatted_punct
                     if not formatted_punct.endswith('\n'):
                         current_line += ' '
                 
             elif token_type == 'cell_ref':
+                # Add separator before conditions in IFS/SWITCH (cell references can be conditions)
+                if (function_stack and function_stack[-1] in ['IFS', 'SWITCH'] and 
+                    ifs_arg_stack and ifs_arg_stack[-1] > 0 and ifs_arg_stack[-1] % 2 == 0):  # Before condition (even positions after first)
+                    lines.append("")  # Blank line
+                    comment = self.translator.format_section_comment(f"── CASE/RESULT PAIR ── DEBUG: cell_ref count={ifs_arg_stack[-1]}")
+                    lines.append(self.translator.indent(depth) + comment)
+                
                 formatted_ref = self.translator.format_cell_reference(token_text)
                 current_line += formatted_ref
                 
@@ -287,17 +371,30 @@ class ModularExcelFormatter:
                 current_line += formatted_op
                 
             elif token_type == 'function':
-                # Add comment for function sections only for complex functions
-                if current_line.strip():
-                    self._add_line_if_not_empty(lines, current_line, depth)
-                    current_line = ""
-                
                 # Look ahead to see if this will be inline
-                if not self._should_keep_simple_inline(tokens, i + 1):
-                    comment = self.translator.get_function_comment(token_text)
-                    if comment:
-                        section_comment = self.translator.format_section_comment(comment)
-                        lines.append(self.translator.indent(depth) + section_comment)
+                will_be_inline = self._should_keep_simple_inline(tokens, i + 1)
+                will_natural_wrap = self._should_use_natural_wrapping(tokens, i + 1)
+                
+                # Add comment for function sections only for complex functions
+                # Suppress generic comments when inside IFS/SWITCH
+                if not will_be_inline and not will_natural_wrap:
+                    should_suppress_comment = (function_stack and 
+                                             any(f in ['IFS', 'SWITCH'] for f in function_stack))
+                    
+                    if not should_suppress_comment:
+                        if current_line.strip():
+                            self._add_line_if_not_empty(lines, current_line, depth)
+                            current_line = ""
+                        
+                        comment = self.translator.get_function_comment(token_text)
+                        if comment:
+                            section_comment = self.translator.format_section_comment(comment)
+                            lines.append(self.translator.indent(depth) + section_comment)
+                
+                # Add first case separator ONLY for the IFS/SWITCH function itself
+                if token_text.upper() in ['IFS', 'SWITCH']:
+                    comment = self.translator.format_section_comment("── CASE/RESULT PAIR ──")
+                    lines.append(self.translator.indent(depth) + comment)
                 
                 formatted_func = self.translator.format_function_call(token_text)
                 current_line += formatted_func
@@ -311,6 +408,13 @@ class ModularExcelFormatter:
                 current_line += formatted_num
                 
             else:
+                # Add separator before conditions in IFS/SWITCH (for literals, identifiers, etc.)
+                if (function_stack and function_stack[-1] in ['IFS', 'SWITCH'] and 
+                    ifs_arg_stack and ifs_arg_stack[-1] > 0 and ifs_arg_stack[-1] % 2 == 0):  # Before condition (even positions after first)
+                    lines.append("")  # Blank line
+                    comment = self.translator.format_section_comment(f"── CASE/RESULT PAIR ── DEBUG: other count={ifs_arg_stack[-1]}")
+                    lines.append(self.translator.indent(depth) + comment)
+                
                 current_line += token_text
                 
             i += 1
@@ -319,6 +423,22 @@ class ModularExcelFormatter:
         self._add_line_if_not_empty(lines, current_line, depth)
         
         return lines
+    
+    def _should_use_natural_wrapping(self, tokens: list, paren_index: int) -> bool:
+        """Determine if a function should use natural length-based wrapping."""
+        if paren_index >= len(tokens) or tokens[paren_index][1] != '(':
+            return False
+        
+        # Look at the function name before the parenthesis
+        if paren_index > 0:
+            prev_token = tokens[paren_index - 1]
+            if prev_token[0] == 'function':
+                function_name = prev_token[1].upper()
+                # Functions that should use natural wrapping
+                natural_wrap_functions = {'AND', 'OR'}
+                return function_name in natural_wrap_functions
+        
+        return False
     
     def _should_keep_simple_inline(self, tokens: list, paren_index: int) -> bool:
         """Simplified inline detection for modular formatter."""
@@ -361,6 +481,10 @@ class ModularExcelFormatter:
         # Apply translator-specific reverse transformations
         result = self.translator.reverse_parse_cell_reference(result)
         result = self.translator.reverse_parse_operator(result)
+        
+        # Apply line-level reverse parsing if available
+        if hasattr(self.translator, 'reverse_parse_line'):
+            result = self.translator.reverse_parse_line(result)
         
         # Apply any additional translator-specific reverse parsing
         if hasattr(self.translator, 'reverse_parse_function'):

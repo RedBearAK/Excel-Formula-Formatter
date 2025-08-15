@@ -38,7 +38,8 @@ class PythonTranslator(SyntaxTranslatorBase):
             'COUNT': 'count',
             'AVERAGE': 'mean',
             'MAX': 'max',
-            'MIN': 'min'
+            'MIN': 'min',
+            'LET': 'let'
         }
         return python_functions.get(function_name.upper(), function_name.lower())
     
@@ -92,7 +93,8 @@ class PythonTranslator(SyntaxTranslatorBase):
             'count': 'COUNT',
             'mean': 'AVERAGE',
             'max': 'MAX',
-            'min': 'MIN'
+            'min': 'MIN',
+            'let': 'LET'
         }
         
         for py_func, excel_func in excel_functions.items():
