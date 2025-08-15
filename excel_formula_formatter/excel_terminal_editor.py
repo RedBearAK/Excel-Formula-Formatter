@@ -14,13 +14,12 @@ package_parent = Path(__file__).parent
 sys.path.insert(0, str(package_parent))
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal
 from textual.widgets import Button, TextArea, Static, Footer, Header
 from textual.binding import Binding
-from textual.message import Message
 
 try:
-    from excel_formula_formatter import ExcelFormulaFormatter
+    from excel_formula_formatter.modular_excel_formatter import ModularExcelFormatter
 except ImportError:
     print("Excel Formula Formatter package not found. Please install or check PYTHONPATH.")
     sys.exit(1)
@@ -95,7 +94,7 @@ class ExcelEditor(App):
     
     def __init__(self):
         super().__init__()
-        self.formatter = ExcelFormulaFormatter()
+        self.formatter = ModularExcelFormatter.create_javascript_formatter()
         self.current_file = None
         self.status_message = "Ready"
     

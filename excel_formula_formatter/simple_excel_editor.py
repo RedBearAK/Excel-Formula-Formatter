@@ -15,17 +15,16 @@ sys.path.insert(0, str(package_parent))
 
 import subprocess
 import platform
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.syntax import Syntax
 from rich.text import Text
 from rich.table import Table
-from rich.live import Live
-from rich.layout import Layout
 
 try:
-    from excel_formula_formatter import ExcelFormulaFormatter
+    from excel_formula_formatter.modular_excel_formatter import ModularExcelFormatter
 except ImportError:
     print("Excel Formula Formatter package not found. Please install or check PYTHONPATH.")
     sys.exit(1)
@@ -34,7 +33,7 @@ except ImportError:
 class SimpleExcelEditor:
     def __init__(self):
         self.console = Console()
-        self.formatter = ExcelFormulaFormatter()
+        self.formatter = ModularExcelFormatter.create_javascript_formatter()
         self.text = ""
         
     def show_header(self):
@@ -65,14 +64,6 @@ class SimpleExcelEditor:
                 # Folded - use JavaScript highlighting
                 content = Syntax(self.text, "javascript", theme="monokai", line_numbers=True)
                 title = "Formula Content (JavaScript highlighting)"
-            elif '\n' in self.text and '#' in self.text:
-                # Python syntax
-                content = Syntax(self.text, "python", theme="monokai", line_numbers=True)
-                title = "Formula Content (Python highlighting)"
-            elif '\n' in self.text and '/*' in self.text:
-                # CSS syntax
-                content = Syntax(self.text, "css", theme="monokai", line_numbers=True)
-                title = "Formula Content (CSS highlighting)"
             else:
                 # Unfolded - use plain text  
                 content = Syntax(self.text, "text", theme="monokai", line_numbers=False)

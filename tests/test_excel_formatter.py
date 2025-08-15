@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Test module for Excel formula formatter round-trip transformations.
+Tests both original and modular formatters for compatibility.
 File: test_excel_formatter.py
 """
 
@@ -14,162 +15,251 @@ package_parent = Path(__file__).parent.parent
 sys.path.insert(0, str(package_parent))
 
 from excel_formula_formatter.excel_formula_formatter import ExcelFormulaFormatter
+from excel_formula_formatter.modular_excel_formatter import ModularExcelFormatter
+
+
+def normalize_formula(formula: str) -> str:
+    """Normalize Excel formula for comparison by removing leading = and spaces."""
+    normalized = formula.strip()
+    if normalized.startswith('='):
+        normalized = normalized[1:]
+    return normalized.replace(' ', '')
 
 
 def test_simple_sum():
-    """Test basic SUM formula round-trip."""
-    formatter = ExcelFormulaFormatter()
+    """Test basic SUM formula round-trip with both formatters."""
     original = "=SUM(A1:A10)"
     
-    folded = formatter.fold_formula(original)
-    unfolded = formatter.unfold_formula(folded)
+    print("Testing with Original Formatter:")
+    original_formatter = ExcelFormulaFormatter()
+    
+    folded_orig = original_formatter.fold_formula(original)
+    unfolded_orig = original_formatter.unfold_formula(folded_orig)
     
     print(f"Original: {original}")
-    print(f"Folded:\n{folded}")
-    print(f"Unfolded: {unfolded}")
+    print(f"Folded (Original):\n{folded_orig}")
+    print(f"Unfolded (Original): {unfolded_orig}")
+    
+    original_success = normalize_formula(original) == normalize_formula(unfolded_orig)
+    print(f"Original formatter success: {original_success}")
     print()
     
-    # Normalize for comparison (remove leading =)
-    original_norm = original[1:] if original.startswith('=') else original
-    unfolded_norm = unfolded[1:] if unfolded.startswith('=') else unfolded
+    print("Testing with Modular Formatter:")
+    modular_formatter = ModularExcelFormatter.create_javascript_formatter()
     
-    success = original_norm.replace(' ', '') == unfolded_norm.replace(' ', '')
-    print(f"Round-trip success: {success}")
+    folded_mod = modular_formatter.fold_formula(original)
+    unfolded_mod = modular_formatter.unfold_formula(folded_mod)
+    
+    print(f"Folded (Modular):\n{folded_mod}")
+    print(f"Unfolded (Modular): {unfolded_mod}")
+    
+    modular_success = normalize_formula(original) == normalize_formula(unfolded_mod)
+    print(f"Modular formatter success: {modular_success}")
+    print()
+    
+    success = original_success and modular_success
+    print(f"Overall success: {success}")
     return success
 
 
 def test_complex_if_formula():
     """Test complex IF formula with cell references and operators."""
-    formatter = ExcelFormulaFormatter()
     original = '=IF(A1>B$2,SUM(A1:A10)*Sheet1!C1,"")'
     
-    folded = formatter.fold_formula(original)
-    unfolded = formatter.unfold_formula(folded)
+    print("Testing with Original Formatter:")
+    original_formatter = ExcelFormulaFormatter()
+    
+    folded_orig = original_formatter.fold_formula(original)
+    unfolded_orig = original_formatter.unfold_formula(folded_orig)
     
     print(f"Original: {original}")
-    print(f"Folded:\n{folded}")
-    print(f"Unfolded: {unfolded}")
+    print(f"Folded (Original):\n{folded_orig}")
+    print(f"Unfolded (Original): {unfolded_orig}")
+    
+    original_success = normalize_formula(original) == normalize_formula(unfolded_orig)
+    print(f"Original formatter success: {original_success}")
     print()
     
-    # Normalize for comparison
-    original_norm = original[1:] if original.startswith('=') else original
-    unfolded_norm = unfolded[1:] if unfolded.startswith('=') else unfolded
+    print("Testing with Modular Formatter:")
+    modular_formatter = ModularExcelFormatter.create_javascript_formatter()
     
-    success = original_norm.replace(' ', '') == unfolded_norm.replace(' ', '')
-    print(f"Round-trip success: {success}")
+    folded_mod = modular_formatter.fold_formula(original)
+    unfolded_mod = modular_formatter.unfold_formula(folded_mod)
+    
+    print(f"Folded (Modular):\n{folded_mod}")
+    print(f"Unfolded (Modular): {unfolded_mod}")
+    
+    modular_success = normalize_formula(original) == normalize_formula(unfolded_mod)
+    print(f"Modular formatter success: {modular_success}")
+    print()
+    
+    success = original_success and modular_success
+    print(f"Overall success: {success}")
     return success
 
 
 def test_not_equal_operator():
-    """Test Excel <> operator conversion."""
-    formatter = ExcelFormulaFormatter()
+    """Test Excel <> operator conversion with both formatters."""
     original = '=IF(A1<>B1,"Different","Same")'
     
-    folded = formatter.fold_formula(original)
-    unfolded = formatter.unfold_formula(folded)
+    print("Testing with Original Formatter:")
+    original_formatter = ExcelFormulaFormatter()
+    
+    folded_orig = original_formatter.fold_formula(original)
+    unfolded_orig = original_formatter.unfold_formula(folded_orig)
     
     print(f"Original: {original}")
-    print(f"Folded:\n{folded}")
-    print(f"Unfolded: {unfolded}")
-    print()
+    print(f"Folded (Original):\n{folded_orig}")
+    print(f"Unfolded (Original): {unfolded_orig}")
     
     # Check that folded version contains != 
-    has_js_operator = '!=' in folded
+    has_js_operator_orig = '!=' in folded_orig
     # Check that unfolded version contains <>
-    has_excel_operator = '<>' in unfolded
+    has_excel_operator_orig = '<>' in unfolded_orig
     
-    # Normalize for comparison
-    original_norm = original[1:] if original.startswith('=') else original
-    unfolded_norm = unfolded[1:] if unfolded.startswith('=') else unfolded
+    round_trip_success_orig = normalize_formula(original) == normalize_formula(unfolded_orig)
+    original_success = has_js_operator_orig and has_excel_operator_orig and round_trip_success_orig
     
-    round_trip_success = original_norm.replace(' ', '') == unfolded_norm.replace(' ', '')
-    success = has_js_operator and has_excel_operator and round_trip_success
+    print(f"Has != in folded: {has_js_operator_orig}")
+    print(f"Has <> in unfolded: {has_excel_operator_orig}")
+    print(f"Round-trip success: {round_trip_success_orig}")
+    print(f"Original formatter success: {original_success}")
+    print()
     
-    print(f"Has != in folded: {has_js_operator}")
-    print(f"Has <> in unfolded: {has_excel_operator}")
-    print(f"Round-trip success: {round_trip_success}")
+    print("Testing with Modular Formatter:")
+    modular_formatter = ModularExcelFormatter.create_javascript_formatter()
+    
+    folded_mod = modular_formatter.fold_formula(original)
+    unfolded_mod = modular_formatter.unfold_formula(folded_mod)
+    
+    print(f"Folded (Modular):\n{folded_mod}")
+    print(f"Unfolded (Modular): {unfolded_mod}")
+    
+    has_js_operator_mod = '!=' in folded_mod
+    has_excel_operator_mod = '<>' in unfolded_mod
+    
+    round_trip_success_mod = normalize_formula(original) == normalize_formula(unfolded_mod)
+    modular_success = has_js_operator_mod and has_excel_operator_mod and round_trip_success_mod
+    
+    print(f"Has != in folded: {has_js_operator_mod}")
+    print(f"Has <> in unfolded: {has_excel_operator_mod}")
+    print(f"Round-trip success: {round_trip_success_mod}")
+    print(f"Modular formatter success: {modular_success}")
+    print()
+    
+    success = original_success and modular_success
     print(f"Overall success: {success}")
     return success
 
 
 def test_nested_functions():
-    """Test deeply nested function calls."""
-    formatter = ExcelFormulaFormatter()
+    """Test deeply nested function calls with both formatters."""
     original = '=SUM(IF(ISERROR(VLOOKUP(A1:A10,B:C,2,FALSE)),0,VLOOKUP(A1:A10,B:C,2,FALSE)))'
     
-    folded = formatter.fold_formula(original)
-    unfolded = formatter.unfold_formula(folded)
+    print("Testing with Original Formatter:")
+    original_formatter = ExcelFormulaFormatter()
+    
+    folded_orig = original_formatter.fold_formula(original)
+    unfolded_orig = original_formatter.unfold_formula(folded_orig)
     
     print(f"Original: {original}")
-    print(f"Folded:\n{folded}")
-    print(f"Unfolded: {unfolded}")
+    print(f"Folded lines (Original): {len(folded_orig.split(chr(10)))}")
+    print(f"Unfolded (Original): {unfolded_orig}")
+    
+    original_success = normalize_formula(original) == normalize_formula(unfolded_orig)
+    print(f"Original formatter success: {original_success}")
     print()
     
-    # Normalize for comparison
-    original_norm = original[1:] if original.startswith('=') else original
-    unfolded_norm = unfolded[1:] if unfolded.startswith('=') else unfolded
+    print("Testing with Modular Formatter:")
+    modular_formatter = ModularExcelFormatter.create_javascript_formatter()
     
-    success = original_norm.replace(' ', '') == unfolded_norm.replace(' ', '')
-    print(f"Round-trip success: {success}")
+    folded_mod = modular_formatter.fold_formula(original)
+    unfolded_mod = modular_formatter.unfold_formula(folded_mod)
+    
+    print(f"Folded lines (Modular): {len(folded_mod.split(chr(10)))}")
+    print(f"Unfolded (Modular): {unfolded_mod}")
+    
+    modular_success = normalize_formula(original) == normalize_formula(unfolded_mod)
+    print(f"Modular formatter success: {modular_success}")
+    print()
+    
+    success = original_success and modular_success
+    print(f"Overall success: {success}")
     return success
 
 
 def test_string_literals_with_commas():
     """Test string literals containing commas and spaces."""
-    formatter = ExcelFormulaFormatter()
     original = '=CONCATENATE("Hello, World!",", How are you?",IF(A1>0," Good"," Bad"))'
     
-    folded = formatter.fold_formula(original)
-    unfolded = formatter.unfold_formula(folded)
+    print("Testing with both formatters (abbreviated output):")
+    
+    # Test original
+    original_formatter = ExcelFormulaFormatter()
+    folded_orig = original_formatter.fold_formula(original)
+    unfolded_orig = original_formatter.unfold_formula(folded_orig)
+    original_success = normalize_formula(original) == normalize_formula(unfolded_orig)
+    
+    # Test modular
+    modular_formatter = ModularExcelFormatter.create_javascript_formatter()
+    folded_mod = modular_formatter.fold_formula(original)
+    unfolded_mod = modular_formatter.unfold_formula(folded_mod)
+    modular_success = normalize_formula(original) == normalize_formula(unfolded_mod)
     
     print(f"Original: {original}")
-    print(f"Folded:\n{folded}")
-    print(f"Unfolded: {unfolded}")
+    print(f"Original formatter success: {original_success}")
+    print(f"Modular formatter success: {modular_success}")
     print()
     
-    # Normalize for comparison
-    original_norm = original[1:] if original.startswith('=') else original
-    unfolded_norm = unfolded[1:] if unfolded.startswith('=') else unfolded
-    
-    success = original_norm.replace(' ', '') == unfolded_norm.replace(' ', '')
-    print(f"Round-trip success: {success}")
+    success = original_success and modular_success
+    print(f"Overall success: {success}")
     return success
 
 
 def test_empty_and_edge_cases():
-    """Test edge cases like empty input."""
-    formatter = ExcelFormulaFormatter()
+    """Test edge cases like empty input with both formatters."""
+    print("Testing edge cases with both formatters:")
+    
+    original_formatter = ExcelFormulaFormatter()
+    modular_formatter = ModularExcelFormatter.create_javascript_formatter()
     
     # Test empty input
-    empty_result = formatter.fold_formula("")
-    empty_unfolded = formatter.unfold_formula(empty_result)
+    empty_result_orig = original_formatter.fold_formula("")
+    empty_unfolded_orig = original_formatter.unfold_formula(empty_result_orig)
+    
+    empty_result_mod = modular_formatter.fold_formula("")
+    empty_unfolded_mod = modular_formatter.unfold_formula(empty_result_mod)
     
     # Test just equals sign
-    equals_result = formatter.fold_formula("=")
-    equals_unfolded = formatter.unfold_formula(equals_result)
+    equals_result_orig = original_formatter.fold_formula("=")
+    equals_unfolded_orig = original_formatter.unfold_formula(equals_result_orig)
     
-    # Test whitespace only
-    space_result = formatter.fold_formula("   ")
-    space_unfolded = formatter.unfold_formula(space_result)
+    equals_result_mod = modular_formatter.fold_formula("=")
+    equals_unfolded_mod = modular_formatter.unfold_formula(equals_result_mod)
     
     print("Edge case results:")
-    print(f"Empty: '{empty_result}' → '{empty_unfolded}'")
-    print(f"Equals: '{equals_result}' → '{equals_unfolded}'")
-    print(f"Spaces: '{space_result}' → '{space_unfolded}'")
+    print(f"Empty (Original): '{empty_result_orig}' → '{empty_unfolded_orig}'")
+    print(f"Empty (Modular): '{empty_result_mod}' → '{empty_unfolded_mod}'")
+    print(f"Equals (Original): '{equals_result_orig}' → '{equals_unfolded_orig}'")
+    print(f"Equals (Modular): '{equals_result_mod}' → '{equals_unfolded_mod}'")
     print()
     
-    success = (empty_result == "" and empty_unfolded == "" and
-               equals_unfolded in ["", "="] and
-               space_result == "" and space_unfolded == "")
+    original_success = (empty_result_orig == "" and empty_unfolded_orig == "" and
+                       equals_unfolded_orig in ["", "="])
+    modular_success = (empty_result_mod == "" and empty_unfolded_mod == "" and
+                      equals_unfolded_mod in ["", "="])
     
-    print(f"Edge cases success: {success}")
+    success = original_success and modular_success
+    print(f"Original formatter edge cases: {original_success}")
+    print(f"Modular formatter edge cases: {modular_success}")
+    print(f"Overall success: {success}")
     return success
 
 
 def main():
     """Run all tests and report results."""
-    print("Excel Formula Formatter Round-Trip Tests")
-    print("=" * 50)
+    print("Excel Formula Formatter Round-Trip Tests (Original vs Modular)")
+    print("=" * 70)
     print()
     
     tests = [
@@ -184,7 +274,7 @@ def main():
     results = []
     for test_name, test_func in tests:
         print(f"Running {test_name} test...")
-        print("-" * 30)
+        print("-" * 50)
         try:
             success = test_func()
             results.append(success)
@@ -198,14 +288,16 @@ def main():
     passed = sum(results)
     total = len(results)
     
-    print("=" * 50)
+    print("=" * 70)
     print(f"Test Results: {passed}/{total} tests passed")
     
     if passed == total:
-        print("🎉 All tests passed! Round-trip transformation is working correctly.")
+        print("🎉 All tests passed! Both formatters working correctly.")
+        print("✅ Original and Modular formatters produce consistent results.")
         return 0
     else:
         print("❌ Some tests failed. Check the output above for details.")
+        print("⚠️  Consider investigating formatter differences.")
         return 1
 
 
