@@ -1,0 +1,117 @@
+=LET(
+    // Base boolean conditions
+    has_Paid_Date, LEN(AM2) > 0,
+    has_Price, LEN(AZ2) >= 1,
+    has_Invoice_Date, LEN(AE2) > 1,
+    has_Title_Date, LEN(AI2) > 1,
+    has_WBL_Date, LEN(AJ2) > 1,
+    has_Routing_ETA, LEN(AN2) > 1,
+    has_Ship_Date, LEN(AD2) > 1,
+    is_End_of_Year_ETA, AN2 = DATEVALUE("12/31/2025"),
+    
+    // Contract-specific days adjustment
+    Days_to_Add, N2,
+    
+    // Base dates plus contract days
+    Invoice_with_Days, AE2 + Days_to_Add,
+    Title_with_Days, AI2 + Days_to_Add,
+    WBL_with_Days, AJ2 + Days_to_Add,
+    Routing_with_Days, AN2 + Days_to_Add,
+    Ship_with_Days, AD2 + Days_to_Add,
+    
+    // Company-specific calculations
+    Routing_plus_21, AN2 + 21,
+    Routing_plus_3_with_Days, AN2 + 3 + Days_to_Add,
+    Routing_plus_7_with_Days, AN2 + 7 + Days_to_Add,
+    Routing_plus_75, AN2 + 75,
+    Origin_plus_60, AQ2 + 60,
+    Origin_plus_75, AQ2 + 75,
+    Ship_plus_60, AD2 + 60,
+    Ship_plus_90, AD2 + 90,
+    Ship_plus_7_with_Days, AD2 + Days_to_Add + 7,
+    Ship_plus_21_with_Days, AD2 + 21 + Days_to_Add,
+    Ship_minus_Days, AD2 - Days_to_Add,
+    Title_plus_30_with_Days, AI2 + Days_to_Add + 30,
+    
+    // Company/pattern identifiers (you'll need to define these)
+    is_Invoice_Pattern, [YourPatternLogic],
+    is_Norpel_Orca, [YourPatternLogic],
+    is_Title_Transfer, [YourPatternLogic],
+    is_Delivery_Pattern, [YourPatternLogic],
+    is_Sogda, [YourPatternLogic],
+    is_Wholefoods, [YourPatternLogic],
+    
+    IFS(
+        // Invoice Date Logic Pattern
+        is_Invoice_Pattern, IFS(
+            AND(  has_Paid_Date, NOT(has_Price), has_Invoice_Date  ),
+                Invoice_with_Days,
+            AND(  has_Paid_Date, NOT(has_Price), NOT(has_Invoice_Date), has_Routing_ETA  ),
+                Routing_plus_21,
+            AND(  has_Paid_Date, NOT(has_Price), NOT(has_Invoice_Date), NOT(has_Routing_ETA), has_Title_Date  ),
+                Title_with_Days,
+            AND(  has_Paid_Date, NOT(has_Price), NOT(has_Invoice_Date), NOT(has_Routing_ETA), NOT(has_Title_Date)  ),
+                Ship_plus_60,
+            TRUE, ""
+        ),
+        
+        // NORPEL/ORCA BAY Pattern
+        is_Norpel_Orca, IFS(
+            AND(  NOT(has_Paid_Date), has_Invoice_Date  ),
+                Invoice_with_Days,
+            AND(  NOT(has_Paid_Date), NOT(has_Invoice_Date)  ),
+                Ship_plus_7_with_Days,
+            TRUE, ""
+        ),
+        
+        // Title Transfer Pattern
+        is_Title_Transfer, IFS(
+            AND(  NOT(has_Paid_Date), has_Title_Date  ),
+                Title_with_Days,
+            AND(  NOT(has_Paid_Date), NOT(has_Title_Date), has_Routing_ETA  ),
+                Routing_plus_3_with_Days,
+            AND(  NOT(has_Paid_Date), NOT(has_Title_Date), NOT(has_Routing_ETA)  ),
+                Ship_plus_21_with_Days,
+            TRUE, ""
+        ),
+        
+        // Delivery/WBL Pattern
+        is_Delivery_Pattern, IFS(
+            AND(  NOT(has_Paid_Date), has_WBL_Date  ),
+                WBL_with_Days,
+            AND(  NOT(has_Paid_Date), NOT(has_WBL_Date), has_Title_Date  ),
+                Title_plus_30_with_Days,
+            AND(  NOT(has_Paid_Date), NOT(has_WBL_Date), NOT(has_Title_Date), has_Routing_ETA, is_End_of_Year_ETA  ),
+                Origin_plus_60,
+            AND(  NOT(has_Paid_Date), NOT(has_WBL_Date), NOT(has_Title_Date), has_Routing_ETA, NOT(is_End_of_Year_ETA)  ),
+                Routing_plus_75,
+            AND(  NOT(has_Paid_Date), NOT(has_WBL_Date), NOT(has_Title_Date), NOT(has_Routing_ETA)  ),
+                Ship_plus_90,
+            TRUE, ""
+        ),
+        
+        // Sogda Pattern
+        is_Sogda, IFS(
+            AND(  NOT(has_Paid_Date), has_Routing_ETA  ),
+                Routing_with_Days,
+            AND(  NOT(has_Paid_Date), NOT(has_Routing_ETA), has_Ship_Date  ),
+                Ship_minus_Days,
+            TRUE, ""
+        ),
+        
+        // Whole Foods Pattern
+        is_Wholefoods, IFS(
+            AND(  NOT(has_Paid_Date), has_Title_Date  ),
+                Title_with_Days,
+            AND(  NOT(has_Paid_Date), NOT(has_Title_Date), has_Routing_ETA, is_End_of_Year_ETA  ),
+                Origin_plus_75,
+            AND(  NOT(has_Paid_Date), NOT(has_Title_Date), has_Routing_ETA, NOT(is_End_of_Year_ETA)  ),
+                Routing_plus_7_with_Days,
+            AND(  NOT(has_Paid_Date), NOT(has_Title_Date), NOT(has_Routing_ETA)  ),
+                Ship_plus_60,
+            TRUE, ""
+        ),
+        
+        TRUE, ""
+    )
+)

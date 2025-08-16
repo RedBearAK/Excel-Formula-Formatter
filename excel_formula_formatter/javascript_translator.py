@@ -8,8 +8,11 @@ import re
 
 from excel_formula_formatter.syntax_translator_base import SyntaxTranslatorBase
 from excel_formula_formatter.excel_formula_patterns import (
-    cell_ref_all_rgx, js_not_equal_rgx
+    cell_ref_all_rgx
 )
+
+# Define specific patterns needed for JavaScript translator
+js_not_equal_rgx = re.compile(r'!=')
 
 
 class JavaScriptTranslator(SyntaxTranslatorBase):
@@ -50,12 +53,20 @@ class JavaScriptTranslator(SyntaxTranslatorBase):
             return f' {operator} '
     
     def format_punctuation(self, punct: str) -> str:
-        return punct
+        # Add spacing around function parentheses for readability (same as Excel modes)
+        if punct == '(':
+            return '( '
+        elif punct == ')':
+            return ' )'
+        else:
+            return punct
     
     def reverse_parse_line(self, line: str) -> str:
         """Convert JavaScript-like line back to Excel syntax."""
-        # Remove comments
-        line = re.sub(r'\s*//.*$', '', line)
+        # Simple comment removal for JavaScript mode
+        comment_pos = line.find('//')
+        if comment_pos >= 0:
+            return line[:comment_pos].strip()
         return line.strip()
     
     def reverse_parse_cell_reference(self, js_text: str) -> str:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main entry point for Excel Formula Formatter package.
+Main entry point for Excel Formula Formatter package with three-mode support.
 File: excel_formula_formatter/__main__.py
 
 Launches the enhanced terminal editor for interactive formula editing.
@@ -12,7 +12,7 @@ import sys
 
 def show_usage():
     """Display usage information."""
-    print("Excel Formula Formatter - Interactive Terminal Editor")
+    print("Excel Formula Formatter - Interactive Terminal Editor with Three Modes")
     print()
     print("Usage:")
     print("  python -m excel_formula_formatter          Launch interactive editor (default)")
@@ -20,14 +20,22 @@ def show_usage():
     print("  python -m excel_formula_formatter --help   Show this help")
     print()
     print("Interactive Editor Features:")
+    print("  • Three syntax modes: JavaScript (j), Annotated Excel (a), Plain Excel (p)")
+    print("  • Safe mode switching while formulas are folded")
     print("  • Paste Excel formulas from clipboard")
-    print("  • Toggle between Excel and JavaScript-like syntax")
+    print("  • Toggle between Excel and formatted syntax")
     print("  • Syntax highlighting with Rich")
-    print("  • Multiple output modes (JavaScript, Plain Excel)")
-    print("  • Perfect for VSCode integration")
+    print("  • Perfect for VSCode integration and Excel Labs Advanced Formula Environment")
+    print()
+    print("Three Modes:")
+    print("  j = JavaScript   - JavaScript-like syntax with quoted cells \"A1\"")
+    print("  a = Annotated    - Excel syntax with helpful comments and spacing")
+    print("  p = Plain        - Pure Excel syntax with smart indenting only (no comments)")
     print()
     print("CLI Mode:")
-    print("  echo '=SUM(A1:A10)' | python -m excel_formula_formatter --cli javascript fold")
+    print("  echo '=SUM(A1:A10)' | python -m excel_formula_formatter --cli j fold")
+    print("  echo '=SUM(A1:A10)' | python -m excel_formula_formatter --cli a auto")
+    print("  echo '=SUM(A1:A10)' | python -m excel_formula_formatter --cli p fold")
 
 
 def main():
@@ -42,8 +50,8 @@ def main():
         # Remove --cli from args and route to CLI formatter
         sys.argv = [sys.argv[0]] + sys.argv[2:]  # Remove --cli
         
-        if len(sys.argv) >= 2 and sys.argv[1] in ['javascript', 'plain']:
-            # Modular CLI version
+        if len(sys.argv) >= 2 and sys.argv[1] in ['j', 'a', 'p', 'javascript', 'plain']:
+            # New modular CLI version with three modes
             from excel_formula_formatter.modular_excel_formatter import main as modular_main
             return modular_main()
         else:
@@ -55,7 +63,8 @@ def main():
     try:
         from excel_formula_formatter.enhanced_simple_excel_editor import main as editor_main
         print("🚀 Launching Excel Formula Interactive Editor...")
-        print("💡 Perfect for VSCode integration via multi-command extensions!")
+        print("💡 Perfect for VSCode integration and Excel Labs Advanced Formula Environment!")
+        print("✨ Three modes: JavaScript (j), Annotated Excel (a), Plain Excel (p)")
         print()
         editor_main()
         return 0

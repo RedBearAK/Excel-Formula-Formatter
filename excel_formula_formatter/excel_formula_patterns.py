@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Excel formula regex patterns module.
+Fixed Excel formula regex patterns that don't consume commas.
 File: excel_formula_formatter/excel_formula_patterns.py
 """
 
@@ -26,12 +26,20 @@ number_rgx = re.compile(r'\b\d+(?:\.\d+)?\b')
 excel_not_equal_rgx = re.compile(r'<>')
 js_not_equal_rgx = re.compile(r'!=')
 
-# Comment patterns for removal during unfold - support both // and # comments
+# FIXED: Comment patterns for safe removal during unfold
+# Only match lines that START with comments (after optional whitespace)
 comment_line_rgx = re.compile(r'^\s*(?://|#).*$', re.MULTILINE)
-inline_comment_rgx = re.compile(r'\s*(?://|#).*$')
+
+# FIXED: Inline comment removal that preserves commas
+# This now only matches from // to end of line, but NOT if there's a comma right before //
+# The (?<![,\s]) negative lookbehind ensures we don't match if there's a comma before the //
+inline_comment_rgx = re.compile(r'(?<![,])\s*//.*$', re.MULTILINE)
+
+# Alternative: More conservative inline comment removal that requires space before //
+inline_comment_safe_rgx = re.compile(r'\s{2,}//.*$', re.MULTILINE)  # Requires 2+ spaces before //
 
 # Specific pattern for line-level comment removal in translators
-line_comment_removal_rgx = re.compile(r'\s*//.*$')
+line_comment_removal_rgx = re.compile(r'(?<![,])\s*//.*$')
 
 # Cleanup patterns for reverse parsing
 space_cleanup_operators_rgx = re.compile(r'\s*([+\-*/=<>!&,()])\s*')
