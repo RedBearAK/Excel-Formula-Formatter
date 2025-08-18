@@ -62,9 +62,11 @@ def main():
     # Default: Launch enhanced terminal editor
     try:
         from excel_formula_formatter.enhanced_simple_excel_editor import main as editor_main
-        print("🚀 Launching Excel Formula Interactive Editor...")
+        print("🚀 Starting Excel Formula Interactive Editor...")
         print("💡 Perfect for VSCode integration and Excel Labs Advanced Formula Environment!")
-        print("✨ Three modes: JavaScript (j), Annotated Excel (a), Plain Excel (p)")
+        print("✨ Default mode: Plain Excel (p) - pure Excel syntax with smart indenting")
+        print("📝 Other modes: JavaScript (j), Annotated Excel (a)")
+        print("🎯 Starting in edit mode - ready for your formula!")
         print()
         editor_main()
         return 0

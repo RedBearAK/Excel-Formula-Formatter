@@ -123,11 +123,8 @@ class PlainExcelTranslator(SyntaxTranslatorBase):
         return number_val
     
     def format_operator(self, operator: str) -> str:
-        # Keep Excel operators as-is, add minimal spacing for readability  
-        if operator in ['<>', '>=', '<=']:
-            return operator  # No extra spaces for multi-char operators
-        else:
-            return operator  # No extra spaces for single-char operators
+        # Add spaces around operators for readability (like Excel Advanced Formula Environment)
+        return f' {operator} '
     
     def format_punctuation(self, punct: str) -> str:
         # Add spacing around function parentheses for readability
@@ -853,20 +850,28 @@ def detect_current_mode(text: str) -> str:
     # Check for mode indicators
     text_content = '\n'.join(lines)
     
-    if '//' in text_content and 'JavaScript syntax' in text_content:
-        return 'j'  # JavaScript
-    elif '//' in text_content and 'annotated Excel syntax' in text_content:
-        return 'a'  # Annotated Excel
-    elif '//' in text_content and ('plain Excel syntax' in text_content or 'Excel Formula' in text_content):
-        return 'a'  # Probably annotated (backward compatibility)
-    elif any(line.startswith('    ') or line.startswith('\t') for line in lines):
-        # Has indentation but no clear mode indicators
-        if '"' in text_content and any(func in text_content for func in ['SUM', 'IF', 'VLOOKUP']):
-            # Has quoted cell references, likely JavaScript
-            return 'j'
+    # Check for explicit mode indicators in comments first
+    if '//' in text_content:
+        if 'JavaScript syntax' in text_content:
+            return 'j'  # JavaScript
+        elif 'annotated Excel syntax' in text_content:
+            return 'a'  # Annotated Excel
+        elif 'plain Excel syntax' in text_content or 'Excel Formula' in text_content:
+            return 'a'  # Probably annotated (backward compatibility)
         else:
-            # No quotes, likely plain or annotated Excel
-            return 'a'  # Default to annotated for safety
+            # Has comments but no explicit mode indicator
+            # Check for quoted cell references to distinguish j vs a
+            if '"A1"' in text_content or '"B1"' in text_content or '"C1"' in text_content:
+                return 'j'  # Has quotes, likely JavaScript
+            else:
+                return 'a'  # Has comments but no quotes, likely Annotated
+    
+    # No comments found - check indentation patterns
+    has_indentation = any(line.startswith('    ') or line.startswith('\t') for line in lines)
+    
+    if has_indentation:
+        # Has indentation but NO comments - this is Plain Excel mode
+        return 'p'
     
     return 'p'  # Default to plain if uncertain
 

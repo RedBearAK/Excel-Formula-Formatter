@@ -15,6 +15,7 @@ sys.path.insert(0, str(package_parent))
 
 import subprocess
 import platform
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
@@ -37,7 +38,7 @@ class EnhancedThreeModeExcelEditor:
     def __init__(self):
         self.console = Console()
         self.text = ""
-        self.current_mode = "j"  # Default to JavaScript mode
+        self.current_mode = "p"  # Default to Plain Excel mode (changed from "j")
         
         # Available formatters with single letter codes
         self.mode_info = {
@@ -75,7 +76,7 @@ class EnhancedThreeModeExcelEditor:
         header.add_row("C = Copy to clipboard", "E = Edit text manually")
         header.add_row("Q = Quit", "")
         
-        return Panel(header, title="Excel Formula Terminal Editor (Three Modes)", border_style="blue")
+        return Panel(header, title="Excel Formula Terminal Editor (Default: Plain Excel)", border_style="blue")
 
     def show_mode_info(self):
         """Show information about available modes."""
@@ -201,57 +202,58 @@ class EnhancedThreeModeExcelEditor:
                 return "ℹ️ Already in that mode"
             
             try:
-                # Detect current mode from text if possible
-                detected_mode = detect_current_mode(self.text)
-                source_mode = detected_mode if detected_mode != 'unknown' else self.current_mode
-                
-                # Perform safe mode switch with refolding
+                # Use self.current_mode as source mode instead of trying to detect
+                # This prevents issues where comments from previous modes interfere with detection
                 old_mode_name = self.mode_info[self.current_mode]['name']
                 new_mode_name = self.mode_info[target_mode]['name']
                 
-                self.text = safe_mode_switch(self.text, source_mode, target_mode, should_refold=True)
+                self.text = safe_mode_switch(self.text, self.current_mode, target_mode, should_refold=True)
                 self.current_mode = target_mode
                 
                 return f"✅ Safely switched from {old_mode_name} to {new_mode_name}"
             except Exception as e:
                 return f"❌ Mode switch failed: {str(e)}"
     
-    def safe_mode_switch_with_refold(self):
-        """Safely switch modes while preserving folded state."""
-        if not self.text.strip():
-            return "❌ No text to switch modes"
-        
-        self.console.print(self.show_mode_info())
-        
-        target_mode = Prompt.ask(
-            "\n[bold yellow]Switch to which mode?[/bold yellow]",
-            choices=list(self.mode_info.keys()),
-            default=self.current_mode
-        )
-        
-        if target_mode == self.current_mode:
-            return "ℹ️ Already in that mode"
-        
-        try:
-            # Detect current mode from text if possible
-            detected_mode = detect_current_mode(self.text)
-            source_mode = detected_mode if detected_mode != 'unknown' else self.current_mode
-            
-            # Perform safe mode switch with refolding
-            old_mode_name = self.mode_info[self.current_mode]['name']
-            new_mode_name = self.mode_info[target_mode]['name']
-            
-            self.text = safe_mode_switch(self.text, source_mode, target_mode, should_refold=True)
-            self.current_mode = target_mode
-            
-            return f"✅ Safely switched from {old_mode_name} to {new_mode_name}"
-        except Exception as e:
-            return f"❌ Safe switch failed: {str(e)}"
-    
     def run(self):
         """Main editor loop."""
         self.console.clear()
         
+        # Start in edit mode immediately
+        self.console.print(self.show_header())
+        self.console.print()
+        self.console.print("[bold yellow]Welcome! Enter your Excel formula to get started:[/bold yellow]")
+        self.console.print("[dim]Press Ctrl+D when finished, or just press Enter to skip to menu[/dim]")
+        
+        # Get initial formula input using Ctrl+D termination
+        lines = []
+        try:
+            while True:
+                line = input()
+                # If first line is empty, user wants to skip to menu
+                if not line.strip() and not lines:
+                    break
+                lines.append(line)
+        except EOFError:
+            # Ctrl+D pressed - normal termination
+            pass
+        except KeyboardInterrupt:
+            # Ctrl+C pressed - skip to menu
+            pass
+        
+        # Set initial text if provided
+        if lines:
+            self.text = '\n'.join(lines)
+            # Auto-format the input
+            result = self.auto_toggle()
+            if result.startswith('✅'):
+                self.console.print(f"\n{result}", style="green")
+            else:
+                self.console.print(f"\n{result}", style="yellow")
+            
+            import time
+            time.sleep(2)
+        
+        # Main interaction loop
         while True:
             # Display UI
             self.console.clear()
@@ -336,20 +338,23 @@ class EnhancedThreeModeExcelEditor:
                         self.console.print("❌ No text to copy", style="red")
                 
                 elif choice == 'e':
-                    self.console.print("\n[bold yellow]Enter your Excel formula (press Enter twice to finish):[/bold yellow]")
+                    self.console.print("\n[bold yellow]Enter your Excel formula:[/bold yellow]")
+                    self.console.print("[dim]Press Ctrl+D when finished (or Ctrl+C to cancel)[/dim]")
                     lines = []
-                    while True:
-                        line = input()
-                        if line == "" and lines and lines[-1] == "":
-                            break
-                        lines.append(line)
-                    
-                    # Remove the last empty line
-                    if lines and lines[-1] == "":
-                        lines.pop()
-                    
-                    self.text = '\n'.join(lines)
-                    self.console.print("✅ Text updated", style="green")
+                    try:
+                        while True:
+                            line = input()
+                            lines.append(line)
+                    except EOFError:
+                        # Ctrl+D pressed - normal completion
+                        if lines:
+                            self.text = '\n'.join(lines)
+                            self.console.print("✅ Text updated", style="green")
+                        else:
+                            self.console.print("ℹ️ No text entered", style="blue")
+                    except KeyboardInterrupt:
+                        # Ctrl+C pressed - cancel
+                        self.console.print("❌ Cancelled", style="red")
                 
                 # Brief pause to show messages
                 if choice != 'q':
