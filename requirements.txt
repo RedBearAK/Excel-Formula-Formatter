@@ -1,0 +1,6 @@
+# Linux only
+pyperclip>=1.9.0
+tk>=0.1.0
+
+# Linux Wayland
+# wl-clipboard (native package)
