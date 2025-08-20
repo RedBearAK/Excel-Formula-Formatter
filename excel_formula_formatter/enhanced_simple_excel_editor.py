@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhanced simple terminal Excel formula editor with paste-first startup flow.
+Enhanced simple terminal Excel formula editor with four syntax modes.
 File: excel_formula_formatter/enhanced_simple_excel_editor.py
 
 Requires: pip install rich
@@ -32,7 +32,7 @@ except ImportError:
     sys.exit(1)
 
 
-class EnhancedThreeModeExcelEditor:
+class EnhancedFourModeExcelEditor:
     def __init__(self):
         self.console = Console()
         self.text = ""
@@ -54,6 +54,11 @@ class EnhancedThreeModeExcelEditor:
                 "name": "Plain Excel",
                 "description": "Pure Excel syntax with smart indenting only",
                 "formatter": ModularExcelFormatter.create_plain_formatter()
+            },
+            "c": {
+                "name": "Compact Excel",
+                "description": "Minimal spacing Excel syntax (for 8K character limit)",
+                "formatter": ModularExcelFormatter.create_compact_formatter()
             }
         }
     
@@ -70,26 +75,26 @@ class EnhancedThreeModeExcelEditor:
         header.add_row("📊 Excel Formula Editor", f"Current Mode: {current_mode_name} ({self.current_mode})")
         header.add_row("Main Commands:", "Mode Commands:")
         header.add_row("T = Toggle (auto)", "M = Change mode")
-        header.add_row("F = Fold formula", "L = List modes")
+        header.add_row("F = Fold formula", "L = List all 4 modes")
         header.add_row("U = Unfold formula", "")
         header.add_row("P = Paste from clipboard", "Other:")
         header.add_row("C = Copy to clipboard", "E = Edit text manually")
         header.add_row("Q = Quit", "Tools = Clipboard diagnostic")
         header.add_row("", default_hint)
         
-        return Panel(header, title="Excel Formula Terminal Editor", border_style="blue")
+        return Panel(header, title="Excel Formula Terminal Editor (4 Modes)", border_style="blue")
 
     def show_mode_info(self):
         """Show information about available modes."""
         mode_info_table = Table.grid(padding=0)
-        mode_info_table.add_column(style="bold yellow", min_width=20)
-        mode_info_table.add_column(style="white", min_width=40)
+        mode_info_table.add_column(style="bold yellow", min_width=22)
+        mode_info_table.add_column(style="white", min_width=45)
         
         for mode_code, info in self.mode_info.items():
             current_marker = " ← CURRENT" if mode_code == self.current_mode else ""
             mode_info_table.add_row(f"{mode_code} = {info['name']}{current_marker}", info['description'])
         
-        return Panel(mode_info_table, title="Available Syntax Modes", border_style="yellow")
+        return Panel(mode_info_table, title="Available Syntax Modes (4 Total)", border_style="yellow")
     
     def display_text(self):
         """Display current text with appropriate syntax highlighting."""
@@ -112,6 +117,13 @@ class EnhancedThreeModeExcelEditor:
                 else:
                     content = Syntax(self.text, "text", theme="monokai", line_numbers=False)
                     title = "Formula Content (Plain text)"
+            elif self.current_mode == "c":
+                if '\n' in self.text and not '//' in self.text:
+                    content = Syntax(self.text, "text", theme="monokai", line_numbers=True)
+                    title = "Formula Content (Compact Excel - Minimal Spacing)"
+                else:
+                    content = Syntax(self.text, "text", theme="monokai", line_numbers=False)
+                    title = "Formula Content (Plain text, compact)"
             else:  # plain mode 'p'
                 if '\n' in self.text and not '//' in self.text:
                     content = Syntax(self.text, "text", theme="monokai", line_numbers=True)
@@ -145,7 +157,7 @@ class EnhancedThreeModeExcelEditor:
         return 'sudo <package_manager> install'  # Generic fallback
     
     def detect_session_type(self):
-        """Detect if we're in X11 or Wayland session (simplified from Toshy approach)."""
+        """Detect if we're in X11 or Wayland session."""
         import os
         
         # First try the standard way
@@ -162,7 +174,7 @@ class EnhancedThreeModeExcelEditor:
         if os.environ.get('DISPLAY'):
             return 'x11'
         
-        # Last resort: process check (simplified from Toshy)
+        # Last resort: process check
         try:
             import subprocess
             
@@ -399,6 +411,7 @@ class EnhancedThreeModeExcelEditor:
                     if len(line) > 2000 and len(content_lines) == 1:
                         self.console.print(f"\n[yellow]ℹ️  Long line detected ({len(line)} chars)[/yellow]")
                         self.console.print("[yellow]💡 Tip: For very long formulas, clipboard paste (P command) is more reliable[/yellow]")
+                        self.console.print("[yellow]💡 Consider using Compact mode (c) to reduce character count[/yellow]")
                         self.console.print("[dim]Continue typing or press Ctrl+D to finish...[/dim]\n")
                     
                 except KeyboardInterrupt:
@@ -584,64 +597,29 @@ class EnhancedThreeModeExcelEditor:
                 available_tools.append("✅ Windows clipboard (clip/powershell) - fallback")
         
         return available_tools
-        """Simple check for immediate paste on startup (non-blocking)."""
-        try:
-            import select
-            import sys
-            
-            # Very quick check - don't block
-            if hasattr(select, 'select'):
-                ready, _, _ = select.select([sys.stdin], [], [], 0.01)  # 10ms timeout
-                if ready:
-                    try:
-                        content = sys.stdin.read().strip()
-                        if content and len(content) > 20:  # Only for substantial content
-                            self.text = content
-                            return True
-                    except:
-                        pass
-            return False
-        except:
-            return False
-    
-    def simple_initial_paste_check(self):
-        """Simple check for immediate paste on startup (non-blocking)."""
-        try:
-            import select
-            import sys
-            
-            # Very quick check - don't block
-            if hasattr(select, 'select'):
-                ready, _, _ = select.select([sys.stdin], [], [], 0.01)  # 10ms timeout
-                if ready:
-                    try:
-                        content = sys.stdin.read().strip()
-                        if content and len(content) > 20:  # Only for substantial content
-                            self.text = content
-                            return True
-                    except:
-                        pass
-            return False
-        except:
-            return False
     
     def run(self):
         """Main editor loop."""
         self.console.clear()
         
         # Show startup message
-        self.console.print(self.show_header())
-        self.console.print()
-        self.console.print("📊 [bold blue]Excel Formula Editor[/bold blue] - Transform your Excel formulas!")
+        self.console.print("📊 [bold blue]Excel Formula Editor (4 Modes)[/bold blue] - Transform your Excel formulas!")
         self.console.print()
         self.console.print("🚀 [bold yellow]Quick Start:[/bold yellow]")
         self.console.print("   1. Copy your Excel formula to clipboard")
         self.console.print("   2. Press [bold]P[/bold] (or just Enter) to paste")
         self.console.print("   3. Formula will auto-format in your chosen mode")
         self.console.print()
+        self.console.print("✨ [bold yellow]Four Syntax Modes:[/bold yellow]")
+        self.console.print("   [bold]j[/bold] = JavaScript    - For syntax highlighting with quotes")
+        self.console.print("   [bold]a[/bold] = Annotated     - Excel with helpful comments")
+        self.console.print("   [bold]p[/bold] = Plain         - Pure Excel with smart indenting")
+        self.console.print("   [bold]c[/bold] = Compact       - Minimal spacing (8K character limit)")
+        self.console.print()
         self.console.print("[dim]💡 Tips:[/dim]")
         self.console.print("[dim]• P (paste) works best for long formulas[/dim]")
         self.console.print("[dim]• E (edit) lets you paste directly in terminal (always works)[/dim]")
+        self.console.print("[dim]• Use Compact mode (c) for very long formulas near 8K limit[/dim]")
         if platform.system() == "Linux":
             session_type = self.detect_session_type()
             install_cmd = self.detect_package_manager()
@@ -654,16 +632,6 @@ class EnhancedThreeModeExcelEditor:
         elif platform.system() not in ["Darwin", "Windows"]:
             self.console.print("[dim]• If P fails: pip install pyperclip[/dim]")
         self.console.print()
-        
-        # Try to detect immediate paste first (in case user pasted before app loaded)
-        paste_detected = self.simple_initial_paste_check()
-        
-        if paste_detected:
-            # Quick auto-format if we got content
-            result = self.auto_toggle()
-            self.console.print(f"✅ Content detected and processed ({len(self.text)} chars)", style="green")
-            import time
-            time.sleep(1.5)
         
         # Main interaction loop
         while True:
@@ -701,6 +669,12 @@ class EnhancedThreeModeExcelEditor:
                 
                 elif choice == 'l':
                     self.console.print(self.show_mode_info())
+                    self.console.print()
+                    self.console.print("[dim]💡 Mode descriptions:[/dim]")
+                    self.console.print("[dim]• JavaScript: Best for syntax highlighting in editors[/dim]")
+                    self.console.print("[dim]• Annotated: Excel syntax with helpful section comments[/dim]")
+                    self.console.print("[dim]• Plain: Clean Excel with smart indenting, no comments[/dim]")
+                    self.console.print("[dim]• Compact: Minimal spacing to avoid 8K character limit[/dim]")
                     input("\nPress Enter to continue...")
                     continue
                 
@@ -751,7 +725,10 @@ class EnhancedThreeModeExcelEditor:
                     if clipboard_text:
                         self.text = clipboard_text
                         char_count = len(clipboard_text)
-                        if char_count > 1000:
+                        if char_count > 6000:
+                            self.console.print(f"✅ Very large formula pasted ({char_count} chars)", style="green")
+                            self.console.print("💡 [yellow]Consider using Compact mode (c) to reduce character count[/yellow]", style="yellow")
+                        elif char_count > 1000:
                             self.console.print(f"✅ Large formula pasted from clipboard ({char_count} chars)", style="green")
                         else:
                             self.console.print("✅ Text pasted from clipboard", style="green")
@@ -763,32 +740,6 @@ class EnhancedThreeModeExcelEditor:
                         debug_info = self.debug_clipboard_access()
                         for info_line in debug_info:
                             self.console.print(f"  {info_line}")
-                        
-                        # Provide helpful troubleshooting
-                        if platform.system() == "Linux":
-                            session_type = self.detect_session_type()
-                            install_cmd = self.detect_package_manager()
-                            self.console.print("\n[dim]💡 Linux clipboard troubleshooting:[/dim]")
-                            self.console.print("[dim]• Make sure you've copied something to clipboard first[/dim]")
-                            self.console.print(f"[dim]• Detected session: {session_type}[/dim]")
-                            
-                            self.console.print("\n[dim]🔧 Session-specific fixes:[/dim]")
-                            if session_type == 'wayland':
-                                self.console.print(f"[dim]• Install Wayland clipboard: {install_cmd} wl-clipboard[/dim]")
-                                self.console.print("[dim]• wl-clipboard is essential for Wayland clipboard access[/dim]")
-                            elif session_type == 'x11':
-                                self.console.print(f"[dim]• Install X11 clipboard: {install_cmd} xclip xsel[/dim]")
-                            else:
-                                self.console.print(f"[dim]• Session detection failed - try both: {install_cmd} wl-clipboard xclip[/dim]")
-                            
-                            self.console.print("\n[dim]🔍 Other possibilities:[/dim]")
-                            self.console.print("[dim]• Content might be in PRIMARY selection (select text, not Ctrl+C)[/dim]")
-                            self.console.print("[dim]• Try copying with Ctrl+C instead of just selecting text[/dim]")
-                            self.console.print("\n[dim]✅ Working alternatives:[/dim]")
-                            self.console.print("[dim]• Use E (edit) and paste directly into terminal (always works)[/dim]")
-                            self.console.print("[dim]• Copy-paste into nano first, then copy from nano[/dim]")
-                        else:
-                            self.console.print("\n[dim]💡 Try using E (edit mode) and paste directly into terminal[/dim]")
                         
                         # Don't auto-clear this error - wait for user input
                         input("\nPress Enter to continue...")
@@ -840,13 +791,6 @@ class EnhancedThreeModeExcelEditor:
                     
                     input("\nPress Enter to continue...")
                     continue
-                    result = self.robust_text_input()
-                    if result.startswith('✅'):
-                        self.console.print(result, style="green")
-                    elif result.startswith('ℹ️'):
-                        self.console.print(result, style="blue")
-                    else:
-                        self.console.print(result, style="red")
                 
                 # Brief pause to show messages
                 if choice != 'q':
@@ -861,8 +805,8 @@ class EnhancedThreeModeExcelEditor:
 
 
 def main():
-    """Run the enhanced three-mode Excel formula editor."""
-    editor = EnhancedThreeModeExcelEditor()
+    """Run the enhanced four-mode Excel formula editor."""
+    editor = EnhancedFourModeExcelEditor()
     editor.run()
 
 

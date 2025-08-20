@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main entry point for Excel Formula Formatter package with three-mode support.
+Main entry point for Excel Formula Formatter package with four-mode support.
 File: excel_formula_formatter/__main__.py
 
 Launches the enhanced terminal editor for interactive formula editing.
@@ -12,7 +12,7 @@ import sys
 
 def show_usage():
     """Display usage information."""
-    print("Excel Formula Formatter - Interactive Terminal Editor with Three Modes")
+    print("Excel Formula Formatter - Interactive Terminal Editor with Four Modes")
     print()
     print("Usage:")
     print("  python -m excel_formula_formatter          Launch interactive editor (default)")
@@ -20,22 +20,31 @@ def show_usage():
     print("  python -m excel_formula_formatter --help   Show this help")
     print()
     print("Interactive Editor Features:")
-    print("  • Three syntax modes: JavaScript (j), Annotated Excel (a), Plain Excel (p)")
+    print("  • Four syntax modes: JavaScript (j), Annotated Excel (a), Plain Excel (p), Compact Excel (c)")
     print("  • Safe mode switching while formulas are folded")
     print("  • Paste Excel formulas from clipboard")
     print("  • Toggle between Excel and formatted syntax")
     print("  • Syntax highlighting with Rich")
     print("  • Perfect for VSCode integration and Excel Labs Advanced Formula Environment")
+    print("  • Compact mode for 8K character limit optimization")
     print()
-    print("Three Modes:")
+    print("Four Modes:")
     print("  j = JavaScript   - JavaScript-like syntax with quoted cells \"A1\"")
     print("  a = Annotated    - Excel syntax with helpful comments and spacing")
     print("  p = Plain        - Pure Excel syntax with smart indenting only (no comments)")
+    print("  c = Compact      - Minimal spacing Excel syntax (for 8K character limit)")
     print()
     print("CLI Mode:")
     print("  echo '=SUM(A1:A10)' | python -m excel_formula_formatter --cli j fold")
     print("  echo '=SUM(A1:A10)' | python -m excel_formula_formatter --cli a auto")
     print("  echo '=SUM(A1:A10)' | python -m excel_formula_formatter --cli p fold")
+    print("  echo '=SUM(A1:A10)' | python -m excel_formula_formatter --cli c fold")
+    print()
+    print("Compact Mode Benefits:")
+    print("  • Removes unnecessary spaces around operators and commas")
+    print("  • Preserves spaces inside string literals")
+    print("  • Significantly reduces character count for complex formulas")
+    print("  • Essential for formulas approaching Excel's 8,192 character limit")
 
 
 def main():
@@ -50,8 +59,8 @@ def main():
         # Remove --cli from args and route to CLI formatter
         sys.argv = [sys.argv[0]] + sys.argv[2:]  # Remove --cli
         
-        if len(sys.argv) >= 2 and sys.argv[1] in ['j', 'a', 'p', 'javascript', 'plain']:
-            # New modular CLI version with three modes
+        if len(sys.argv) >= 2 and sys.argv[1] in ['j', 'a', 'p', 'c', 'javascript', 'annotated', 'plain', 'compact']:
+            # New modular CLI version with four modes
             from excel_formula_formatter.modular_excel_formatter import main as modular_main
             return modular_main()
         else:
@@ -65,8 +74,10 @@ def main():
         print("🚀 Starting Excel Formula Interactive Editor...")
         print("💡 Perfect for VSCode integration and Excel Labs Advanced Formula Environment!")
         print("✨ Default mode: Plain Excel (p) - pure Excel syntax with smart indenting")
-        print("📝 Other modes: JavaScript (j), Annotated Excel (a)")
+        print("📝 Four modes available: JavaScript (j), Annotated Excel (a), Plain Excel (p), Compact Excel (c)")
         print("🎯 Starting in edit mode - ready for your formula!")
+        print()
+        print("💡 [bold yellow]New:[/bold yellow] Compact mode (c) for formulas near 8K character limit!")
         print()
         editor_main()
         return 0

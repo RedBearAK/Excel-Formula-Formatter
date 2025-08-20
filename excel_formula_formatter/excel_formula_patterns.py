@@ -50,4 +50,20 @@ space_cleanup_whitespace_rgx = re.compile(r'\s+')
 whitespace_newline_rgx = re.compile(r'\s*\r?\n\s*')
 leading_trailing_space_rgx = re.compile(r'^\s+|\s+$')
 
+# NEW: Cleanup patterns for reverse parsing
+paren_leading_space_rgx = re.compile(r'\(\s+')
+paren_trailing_space_rgx = re.compile(r'\s+\)')
+multiple_spaces_rgx = re.compile(r'\s+')
+comma_spacing_rgx = re.compile(r'\s*,\s*')
+
+# String literal protection pattern
+string_literal_protection_rgx = re.compile(r'"[^"]*"')
+
+# Operator spacing cleanup patterns
+operator_spacing_rgx = re.compile(r'\s*([+\-*/=<>!,()])\s*')
+multi_char_operator_spacing_rgx = re.compile(r'\s*(<>|>=|<=|!=)\s*')
+
+# Comment detection pattern
+comment_line_detection_rgx = re.compile(r'^\s*(?://|#)')
+
 # End of file #

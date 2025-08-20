@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-Modular Excel formula formatter supporting three distinct target modes.
-Complete rewrite with three modes: JavaScript (j), Annotated Excel (a), Plain Excel (p).
+Modular Excel formula formatter supporting four distinct target modes.
+Complete rewrite with four modes: 
+JavaScript (j), 
+Annotated Excel (a), 
+Plain Excel (p), 
+Compact Excel (c).
 File: excel_formula_formatter/modular_excel_formatter.py
 """
 
@@ -13,11 +17,20 @@ from excel_formula_formatter.excel_formula_patterns import (
     excel_functions_rgx,
     number_rgx,
     whitespace_newline_rgx,
-    leading_trailing_space_rgx
+    leading_trailing_space_rgx,
+    paren_leading_space_rgx,
+    paren_trailing_space_rgx,
+    multiple_spaces_rgx,
+    comma_spacing_rgx,
+    string_literal_protection_rgx,
+    operator_spacing_rgx,
+    multi_char_operator_spacing_rgx,
+    comment_line_detection_rgx
 )
 
 from excel_formula_formatter.syntax_translator_base import SyntaxTranslatorBase
 from excel_formula_formatter.javascript_translator import JavaScriptTranslator
+from excel_formula_formatter.compact_excel_translator import CompactExcelTranslator
 
 
 class AnnotatedExcelTranslator(SyntaxTranslatorBase):
@@ -169,6 +182,11 @@ class ModularExcelFormatter:
         """Create formatter with Plain Excel translator (mode 'p')."""
         return cls(PlainExcelTranslator())
     
+    @classmethod  
+    def create_compact_formatter(cls):
+        """Create formatter with Compact Excel translator (mode 'c')."""
+        return cls(CompactExcelTranslator())
+    
     @classmethod
     def create_formatter_by_mode(cls, mode: str):
         """Create formatter by single letter mode code."""
@@ -179,8 +197,10 @@ class ModularExcelFormatter:
             return cls.create_annotated_formatter()
         elif mode == 'p':
             return cls.create_plain_formatter()
+        elif mode == 'c':
+            return cls.create_compact_formatter()
         else:
-            raise ValueError(f"Unknown mode '{mode}'. Use 'j' (JavaScript), 'a' (Annotated Excel), or 'p' (Plain Excel)")
+            raise ValueError(f"Unknown mode '{mode}'. Use 'j' (JavaScript), 'a' (Annotated Excel), 'p' (Plain Excel), or 'c' (Compact Excel)")
     
     def get_mode_code(self) -> str:
         """Get the single letter mode code for this formatter."""
@@ -190,6 +210,8 @@ class ModularExcelFormatter:
             return 'a'
         elif isinstance(self.translator, PlainExcelTranslator):
             return 'p'
+        elif isinstance(self.translator, CompactExcelTranslator):
+            return 'c'
         else:
             return 'unknown'
     
@@ -223,8 +245,8 @@ class ModularExcelFormatter:
             formatted_lines.insert(insert_index, '{=')
             formatted_lines.append('}')
         
-        # Filter out empty lines for plain mode
-        if isinstance(self.translator, PlainExcelTranslator):
+        # Filter out empty lines for plain and compact modes
+        if isinstance(self.translator, (PlainExcelTranslator, CompactExcelTranslator)):
             formatted_lines = [line for line in formatted_lines if line.strip()]
         
         return '\n'.join(formatted_lines)
@@ -284,7 +306,7 @@ class ModularExcelFormatter:
         
         for line in lines:
             # Skip lines that are entirely comments
-            if re.match(r'^\s*(?://|#)', line):
+            if comment_line_detection_rgx.match(line):
                 continue
             
             # For other lines, carefully remove inline comments
@@ -454,8 +476,11 @@ class ModularExcelFormatter:
             elif token_type == 'operator':
                 current_line += self.translator.format_operator(token_text)
             elif token_type == 'punctuation' and token_text == ',':
-                # Top-level comma - just add space
-                current_line += self.translator.format_punctuation(token_text) + " "
+                # Top-level comma - handle spacing based on translator
+                if isinstance(self.translator, CompactExcelTranslator):
+                    current_line += self.translator.format_punctuation(token_text)  # No space
+                else:
+                    current_line += self.translator.format_punctuation(token_text) + " "  # Add space
             elif token_type == 'punctuation':
                 current_line += self.translator.format_punctuation(token_text)
             else:
@@ -573,8 +598,12 @@ class ModularExcelFormatter:
                 value_str = self._tokens_to_string(argument_groups[i + 1]).strip()
                 
                 # Combine on same line: variable, value,
-                combined_line = (self.translator.indent(base_depth + 1) + var_name + 
-                               self.translator.format_punctuation(',') + " " + value_str)
+                if isinstance(self.translator, CompactExcelTranslator):
+                    combined_line = (self.translator.indent(base_depth + 1) + var_name + 
+                                   self.translator.format_punctuation(',') + value_str)
+                else:
+                    combined_line = (self.translator.indent(base_depth + 1) + var_name + 
+                                   self.translator.format_punctuation(',') + " " + value_str)
                 
                 # Add comma if not the last pair (check if this isn't the final expression)
                 if i + 2 < len(argument_groups):
@@ -590,94 +619,6 @@ class ModularExcelFormatter:
         
         # Closing paren
         lines.append(self.translator.indent(base_depth) + self.translator.format_punctuation(')'))
-        
-        return lines
-
-    def _process_logical_function(self, func_name: str, arg_tokens: list, base_depth: int) -> list:
-        """Process AND/OR functions with natural wrapping."""
-        lines = []
-        
-        # Split arguments by top-level commas
-        argument_groups = self._split_by_top_level_commas(arg_tokens)
-        
-        # Filter out any empty argument groups
-        argument_groups = [group for group in argument_groups if group]
-        
-        if not argument_groups:
-            # Empty function call
-            func_str = (self.translator.format_function_call(func_name) + 
-                       self.translator.format_punctuation('(') + 
-                       self.translator.format_punctuation(')'))
-            lines.append(self.translator.indent(base_depth) + func_str)
-            return lines
-        
-        # Convert argument groups to strings
-        arg_strings = []
-        for group in argument_groups:
-            arg_str = self._tokens_to_string(group).strip()
-            if arg_str:
-                arg_strings.append(arg_str)
-        
-        if not arg_strings:
-            # No valid arguments
-            func_str = (self.translator.format_function_call(func_name) + 
-                       self.translator.format_punctuation('(') + 
-                       self.translator.format_punctuation(')'))
-            lines.append(self.translator.indent(base_depth) + func_str)
-            return lines
-        
-        # Try to fit everything on one line first
-        single_line_content = ", ".join(arg_strings)
-        single_line = (self.translator.format_function_call(func_name) + 
-                      self.translator.format_punctuation('(') + 
-                      single_line_content + 
-                      self.translator.format_punctuation(')'))
-        
-        # Check if single line fits (account for indentation)
-        indented_single_line = self.translator.indent(base_depth) + single_line
-        if len(indented_single_line) <= 79:
-            lines.append(indented_single_line)
-            return lines
-        
-        # Multi-line with natural wrapping
-        lines.append(self.translator.indent(base_depth) + 
-                    self.translator.format_function_call(func_name) + 
-                    self.translator.format_punctuation('(') + arg_strings[0])
-        
-        # Natural wrapping for remaining arguments
-        current_line = self.translator.indent(base_depth + 1)
-        line_arg_count = 0
-        
-        for arg_index in range(1, len(arg_strings)):
-            arg_str = arg_strings[arg_index]
-            
-            # Check if adding this argument would make the line too long
-            test_line = current_line
-            if line_arg_count > 0:
-                test_line += ", "
-            test_line += arg_str
-            
-            if len(test_line) <= 75 and line_arg_count < 3:  # Max 3 args per continuation line
-                # Add to current line
-                if line_arg_count > 0:
-                    current_line += ", "
-                current_line += arg_str
-                line_arg_count += 1
-            else:
-                # Finish current line and start new one
-                if line_arg_count > 0:
-                    current_line += ","
-                    lines.append(current_line)
-                current_line = self.translator.indent(base_depth + 1) + arg_str
-                line_arg_count = 1
-        
-        # Finish the last line and add closing paren
-        if line_arg_count > 0:
-            current_line += self.translator.format_punctuation(')')
-            lines.append(current_line)
-        else:
-            # This shouldn't happen, but just in case
-            lines.append(self.translator.indent(base_depth) + self.translator.format_punctuation(')'))
         
         return lines
 
@@ -793,7 +734,10 @@ class ModularExcelFormatter:
                 result += self.translator.format_function_call(token_text)
             elif token_type == 'punctuation':
                 if token_text == ',':
-                    result += ', '  # Always add space after comma in token strings
+                    if isinstance(self.translator, CompactExcelTranslator):
+                        result += ','  # No space after comma in compact mode
+                    else:
+                        result += ', '  # Always add space after comma in non-compact modes
                 else:
                     result += self.translator.format_punctuation(token_text)
             else:
@@ -815,23 +759,40 @@ class ModularExcelFormatter:
         
         # Clean up spacing more carefully
         # Remove extra spaces around parentheses that were added for formatting
-        result = re.sub(r'\(\s+', '(', result)
-        result = re.sub(r'\s+\)', ')', result)
+        result = paren_leading_space_rgx.sub('(', result)
+        result = paren_trailing_space_rgx.sub(')', result)
         
         # Normalize multiple spaces to single spaces
-        result = re.sub(r'\s+', ' ', result)
+        result = multiple_spaces_rgx.sub(' ', result)
         
         # Clean up comma spacing - add space after comma, none before
-        result = re.sub(r'\s*,\s*', ', ', result)
+        result = comma_spacing_rgx.sub(', ', result)
         
-        # For Excel modes, preserve some operator spacing for readability
+        # For Excel modes (except compact), preserve some operator spacing for readability
         if isinstance(self.translator, (AnnotatedExcelTranslator, PlainExcelTranslator)):
             # Keep spaces around operators if translator added them
             pass  # Don't strip operator spacing for Excel modes
+        elif isinstance(self.translator, CompactExcelTranslator):
+            # For compact mode, remove ALL unnecessary spaces except in string literals
+            # First protect string literals
+            string_parts = []
+            def replace_string(match):
+                string_parts.append(match.group(0))
+                return f"__STRING_{len(string_parts)-1}__"
+            
+            result = string_literal_protection_rgx.sub(replace_string, result)
+            
+            # Remove spaces around operators and commas
+            result = operator_spacing_rgx.sub(r'\1', result)
+            result = multi_char_operator_spacing_rgx.sub(r'\1', result)
+            
+            # Restore string literals
+            for i, string_literal in enumerate(string_parts):
+                result = result.replace(f"__STRING_{i}__", string_literal)
         else:
             # For JavaScript mode, clean up operator spacing 
-            result = re.sub(r'\s*([+\-*/=<>!])\s*', r'\1', result)
-            result = re.sub(r'\s*(<>|>=|<=|!=)\s*', r'\1', result)
+            result = operator_spacing_rgx.sub(r'\1', result)
+            result = multi_char_operator_spacing_rgx.sub(r'\1', result)
         
         return result.strip()
 
@@ -870,8 +831,26 @@ def detect_current_mode(text: str) -> str:
     has_indentation = any(line.startswith('    ') or line.startswith('\t') for line in lines)
     
     if has_indentation:
-        # Has indentation but NO comments - this is Plain Excel mode
-        return 'p'
+        # Has indentation but NO comments - could be Plain or Compact Excel mode
+        # Look for spacing patterns to distinguish
+        # Compact mode would have minimal spacing around operators and commas
+        sample_line = ""
+        for line in lines:
+            if line.strip() and not line.strip().startswith('//'):
+                sample_line = line.strip()
+                break
+        
+        if sample_line:
+            # Check spacing patterns
+            has_spaced_commas = ', ' in sample_line
+            has_spaced_operators = ' = ' in sample_line or ' > ' in sample_line or ' < ' in sample_line
+            
+            if not has_spaced_commas and not has_spaced_operators:
+                return 'c'  # Compact mode (minimal spacing)
+            else:
+                return 'p'  # Plain mode (readable spacing)
+        else:
+            return 'p'  # Default to plain if uncertain
     
     return 'p'  # Default to plain if uncertain
 
@@ -944,19 +923,20 @@ def main():
     """Main function for command line usage.""" 
     if len(sys.argv) < 2:
         print("Usage: python modular_excel_formatter.py <mode> [fold|unfold|auto]", file=sys.stderr)
-        print("  mode: j (JavaScript), a (Annotated Excel), p (Plain Excel)", file=sys.stderr)
+        print("  mode: j (JavaScript), a (Annotated Excel), p (Plain Excel), c (Compact Excel)", file=sys.stderr)
         print("  operation: fold, unfold, or auto (default)", file=sys.stderr)
         print("  j: JavaScript-like syntax for highlighting", file=sys.stderr)
         print("  a: Excel syntax with helpful comments", file=sys.stderr)
         print("  p: Pure Excel syntax with smart indenting only", file=sys.stderr)
+        print("  c: Compact Excel syntax with minimal spacing (for 8K limit)", file=sys.stderr)
         return 1
     
     mode = sys.argv[1].lower().strip()
     operation = sys.argv[2].lower() if len(sys.argv) > 2 else 'auto'  # Default to auto
     
-    if mode not in ['j', 'a', 'p']:
+    if mode not in ['j', 'a', 'p', 'c']:
         print(f"Unknown mode: {mode}", file=sys.stderr)
-        print("Available modes: j (JavaScript), a (Annotated Excel), p (Plain Excel)", file=sys.stderr)
+        print("Available modes: j (JavaScript), a (Annotated Excel), p (Plain Excel), c (Compact Excel)", file=sys.stderr)
         return 1
     
     try:
