@@ -26,7 +26,7 @@ def normalize_formula(formula: str) -> str:
 
 
 def test_javascript_mode():
-    """Test JavaScript mode (j) - should have comments and quoted cell references."""
+    """Test JavaScript mode (j) - should have comments and backtick cell references."""
     formatter = ModularExcelFormatter.create_formatter_by_mode('j')
     original = '=IF(A1<>B1,SUM(A1:A10),"Equal")'
     
@@ -40,7 +40,7 @@ def test_javascript_mode():
     
     # Check JavaScript mode characteristics
     has_js_comments = '// Excel Formula (JavaScript syntax' in folded
-    has_quoted_cells = '"A1"' in folded and '"B1"' in folded
+    has_quoted_cells = '`A1`' in folded and '`B1`' in folded
     has_js_operator = '!=' in folded
     has_excel_operator_back = '<>' in unfolded
     
@@ -204,7 +204,7 @@ def test_safe_mode_switching():
     final_norm = normalize_formula(final_unfolded)
     
     # Check that modes produce different output
-    js_has_quotes = '"A1"' in js_folded
+    js_has_quotes = '`A1`' in js_folded
     annotated_no_quotes = '"A1"' not in annotated_result
     plain_no_comments = '//' not in plain_result
     
@@ -243,7 +243,7 @@ def test_complex_formula_all_modes():
         mode_results[mode] = {
             'folded_lines': len(folded.split('\n')),
             'has_comments': '//' in folded,
-            'has_quotes': '"A1"' in folded or '"B1"' in folded,
+            'has_quotes': '`A1`' in folded or '`B1`' in folded,
             'round_trip': round_trip_success
         }
         

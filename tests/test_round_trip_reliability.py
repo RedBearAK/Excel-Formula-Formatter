@@ -265,7 +265,7 @@ def test_safe_mode_switching():
     plain_norm = normalize_formula(plain_result)
     final_norm = normalize_formula(final_result)
     
-    mode_detection_success = detected_mode == 'javascript'
+    mode_detection_success = detected_mode == 'j'
     switch_success = original_norm == plain_norm == final_norm
     
     success = mode_detection_success and switch_success
