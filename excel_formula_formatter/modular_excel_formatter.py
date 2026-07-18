@@ -12,9 +12,14 @@ File: excel_formula_formatter/modular_excel_formatter.py
 import sys
 import re
 
+from excel_formula_formatter.formula_text_guards import (
+    find_opaque_end,
+    protect_opaque_spans,
+    restore_opaque_spans,
+    scan_string_literal,
+)
 from excel_formula_formatter.excel_formula_patterns import (
     cell_ref_all_rgx,
-    excel_functions_rgx,
     number_rgx,
     whitespace_newline_rgx,
     leading_trailing_space_rgx,
@@ -22,11 +27,14 @@ from excel_formula_formatter.excel_formula_patterns import (
     paren_trailing_space_rgx,
     multiple_spaces_rgx,
     comma_spacing_rgx,
-    string_literal_protection_rgx,
     operator_spacing_rgx,
     multi_char_operator_spacing_rgx,
     comment_line_detection_rgx
 )
+
+# LET name/value pairs longer than this (in characters) get their
+# value expression expanded across multiple lines when folding
+let_value_wrap_threshold = 100
 
 from excel_formula_formatter.syntax_translator_base import SyntaxTranslatorBase
 from excel_formula_formatter.javascript_translator import JavaScriptTranslator
@@ -189,8 +197,17 @@ class ModularExcelFormatter:
     
     @classmethod
     def create_formatter_by_mode(cls, mode: str):
-        """Create formatter by single letter mode code."""
+        """Create formatter by mode code, accepting single letters
+        (j, a, p, c) or full names (javascript, annotated, plain,
+        compact) as the CLI does."""
         mode = mode.lower().strip()
+        long_names = {
+            'javascript': 'j',
+            'annotated': 'a',
+            'plain': 'p',
+            'compact': 'c',
+        }
+        mode = long_names.get(mode, mode)
         if mode == 'j':
             return cls.create_javascript_formatter()
         elif mode == 'a':
@@ -244,6 +261,15 @@ class ModularExcelFormatter:
             insert_index = 1 if formatted_lines and formatted_lines[0].startswith('//') else 0
             formatted_lines.insert(insert_index, '{=')
             formatted_lines.append('}')
+        else:
+            # Preserve the leading = on the first content line so folded
+            # output still reads as a formula
+            for idx, line in enumerate(formatted_lines):
+                stripped = line.lstrip()
+                if stripped and not stripped.startswith('//'):
+                    leading_ws = line[:len(line) - len(stripped)]
+                    formatted_lines[idx] = leading_ws + '=' + stripped
+                    break
         
         # Filter out empty lines for plain and compact modes
         if isinstance(self.translator, (PlainExcelTranslator, CompactExcelTranslator)):
@@ -300,120 +326,224 @@ class ModularExcelFormatter:
         return excel_formula
     
     def _safe_remove_comments(self, text: str) -> str:
-        """Safely remove comments without consuming commas."""
+        """Safely remove comments without touching commas or string contents.
+
+        // sequences inside string literals (e.g. "http://x.com") are
+        NOT comments: the scan jumps over quoted spans entirely. The
+        comma guard from the original implementation is retained so a
+        // directly after a trailing comma is left alone.
+        """
         lines = text.split('\n')
         cleaned_lines = []
-        
+
         for line in lines:
             # Skip lines that are entirely comments
             if comment_line_detection_rgx.match(line):
                 continue
-            
-            # For other lines, carefully remove inline comments
-            # Look for // that are NOT immediately preceded by a comma
+
             comment_pos = -1
-            for i, char in enumerate(line):
-                if char == '/' and i + 1 < len(line) and line[i + 1] == '/':
-                    # Found //, check if it's safe to remove
-                    # Look back to see if there's a comma without intervening non-space chars
-                    safe_to_remove = True
+            i = 0
+            length = len(line)
+            while i < length:
+                # Jump over string literals so their contents are opaque
+                if line[i] == '"':
+                    end = scan_string_literal(line, i)
+                    if end < 0:
+                        break  # Unclosed on this line: no comment scan past it
+                    i = end
+                    continue
+
+                if line[i] == '/' and i + 1 < length and line[i + 1] == '/':
+                    # Found // outside any string; apply the comma guard
                     look_back = i - 1
                     while look_back >= 0 and line[look_back].isspace():
                         look_back -= 1
-                    
-                    # If the last non-space character is a comma, don't remove the comment
-                    if look_back >= 0 and line[look_back] == ',':
-                        safe_to_remove = False
-                    
-                    if safe_to_remove:
+
+                    if not (look_back >= 0 and line[look_back] == ','):
                         comment_pos = i
                         break
-            
+
+                i += 1
+
             if comment_pos >= 0:
-                # Remove comment but preserve everything before it
                 cleaned_line = line[:comment_pos].rstrip()
             else:
                 cleaned_line = line
-            
+
             if cleaned_line.strip():  # Only add non-empty lines
                 cleaned_lines.append(cleaned_line)
-        
+
         return '\n'.join(cleaned_lines)
     
     def _parse_excel_tokens(self, formula: str) -> list:
-        """Parse Excel formula into tokens with type information."""
+        """Parse Excel formula into tokens with type information.
+
+        Opaque segments (strings with "" escapes, 'quoted sheet' refs,
+        [structured references], {array constants}) are scanned as
+        single atomic tokens so their interior can never be split,
+        re-spaced, or mistaken for argument separators.
+        """
         tokens = []
         i = 0
         length = len(formula)
-        
+
         while i < length:
-            # Skip whitespace
+            # Skip whitespace between tokens
             if formula[i].isspace():
                 i += 1
                 continue
-                
-            # Check for string literals first (quoted text)
+
+            # String literals (with Excel's doubled "" quote escaping)
             if formula[i] == '"':
-                end_quote = formula.find('"', i + 1)
-                if end_quote == -1:
-                    end_quote = length  # Unclosed quote, take rest
-                token_text = formula[i:end_quote + 1]
-                tokens.append(('string', token_text))
-                i = end_quote + 1
+                end = scan_string_literal(formula, i)
+                if end < 0:
+                    raise ValueError(
+                        f"Unclosed string literal starting at position {i}: "
+                        f"...{formula[i:i + 30]}"
+                    )
+                tokens.append(('string', formula[i:end]))
+                i = end
                 continue
-            
-            # Check for cell references (including ranges and sheet references)
+
+            # Quoted sheet names: 'My Sheet'!A1 or 'My Sheet'!Name
+            if formula[i] == "'":
+                end = find_opaque_end(formula, i)
+                if end < 0:
+                    raise ValueError(
+                        f"Unclosed sheet name quote at position {i}: "
+                        f"...{formula[i:i + 30]}"
+                    )
+                token_text = formula[i:end]
+                # Consume the ! and the reference that follows the sheet name
+                if end < length and formula[end] == '!':
+                    ref_match = cell_ref_all_rgx.match(formula, end + 1)
+                    if ref_match:
+                        token_text = formula[i:ref_match.end()]
+                        i = ref_match.end()
+                    else:
+                        # Named range on the sheet: collect the name
+                        j = end + 1
+                        while j < length and (formula[j].isalnum() or formula[j] in '_.'):
+                            j += 1
+                        token_text = formula[i:j]
+                        i = j
+                else:
+                    i = end
+                tokens.append(('cell_ref', token_text))
+                continue
+
+            # Structured references: [Column], [@[Col]], [[#All],[Col]]
+            if formula[i] == '[':
+                end = find_opaque_end(formula, i)
+                if end < 0:
+                    raise ValueError(
+                        f"Unclosed structured reference bracket at position {i}: "
+                        f"...{formula[i:i + 30]}"
+                    )
+                tokens.append(('structured_ref', formula[i:end]))
+                i = end
+                continue
+
+            # Array constants: {1,2;3,4}
+            if formula[i] == '{':
+                end = find_opaque_end(formula, i)
+                if end < 0:
+                    raise ValueError(
+                        f"Unclosed array constant brace at position {i}: "
+                        f"...{formula[i:i + 30]}"
+                    )
+                tokens.append(('array_literal', formula[i:end]))
+                i = end
+                continue
+
+            # Cell references (absolute $A$1, ranges, unquoted sheet refs)
             cell_match = cell_ref_all_rgx.match(formula, i)
             if cell_match:
-                token_text = cell_match.group(0)
-                tokens.append(('cell_ref', token_text))
+                tokens.append(('cell_ref', cell_match.group(0)))
                 i = cell_match.end()
                 continue
-            
-            # Check for two-character operators
+
+            # Numbers, including scientific notation (1.5E+10) and .5
+            if formula[i].isdigit() or (
+                formula[i] == '.' and i + 1 < length and formula[i + 1].isdigit()
+            ):
+                number_match = number_rgx.match(formula, i)
+                if number_match:
+                    tokens.append(('number', number_match.group(0)))
+                    i = number_match.end()
+                    continue
+
+            # Two-character operators
             if i < length - 1:
-                two_char = formula[i:i+2]
+                two_char = formula[i:i + 2]
                 if two_char in ['<>', '>=', '<=']:
                     tokens.append(('operator', two_char))
                     i += 2
                     continue
-            
-            # Check for single character operators (separate from punctuation)
+
+            # Single character operators
             if formula[i] in '+-*/=<>&':
                 tokens.append(('operator', formula[i]))
                 i += 1
                 continue
-            
-            # Check for punctuation
-            if formula[i] in '(),[]:;!%^':
+
+            # Punctuation (brackets/braces handled above as atomic tokens)
+            if formula[i] in '(),:;!%^':
                 tokens.append(('punctuation', formula[i]))
                 i += 1
                 continue
-            
-            # Collect word/number/identifier
+
+            # Collect word/identifier
             start = i
-            while i < length and not formula[i].isspace() and formula[i] not in '+-*/=<>(),[]:;!&%^"':
+            while (
+                i < length
+                and not formula[i].isspace()
+                and formula[i] not in '+-*/=<>(),[]{}:;!&%^"\''
+            ):
                 i += 1
-            
+
             if start < i:
                 token_text = formula[start:i]
-                token_type = self._classify_token(token_text)
-                tokens.append((token_type, token_text))
-                
-        return tokens
+                tokens.append((self._classify_token(token_text), token_text))
+            else:
+                # Unrecognized character: keep it verbatim so nothing is lost
+                tokens.append(('identifier', formula[i]))
+                i += 1
+
+        return self._promote_function_tokens(tokens)
+
+    def _promote_function_tokens(self, tokens: list) -> list:
+        """Classify identifiers followed by ( as functions via lookahead.
+
+        This replaces the hardcoded function-name list: any identifier
+        immediately followed by an opening parenthesis is a function
+        call (IFERROR, TEXTSPLIT, LAMBDA-variable invocations, ...),
+        and anything else is not, even if its name matches a known
+        function.
+        """
+        promoted = []
+        for index, (token_type, token_text) in enumerate(tokens):
+            if token_type in ('identifier', 'function'):
+                next_is_paren = (
+                    index + 1 < len(tokens) and tokens[index + 1][1] == '('
+                )
+                token_type = 'function' if next_is_paren else 'identifier'
+            promoted.append((token_type, token_text))
+        return promoted
+
     
     def _classify_token(self, token: str) -> str:
-        """Classify a token by type."""
-        if excel_functions_rgx.match(token):
-            return 'function'
-        elif cell_ref_all_rgx.match(token):
+        """Classify a word token by type using exact (full) matches.
+
+        Function classification is NOT done here: it happens by paren
+        lookahead in _promote_function_tokens, so unlisted functions
+        work and function-named identifiers don't misclassify.
+        """
+        if cell_ref_all_rgx.fullmatch(token):
             return 'cell_ref'
-        elif number_rgx.match(token):
+        if number_rgx.fullmatch(token):
             return 'number'
-        elif token in ['<>', '>=', '<=', '==', '!=']:
-            return 'operator'
-        else:
-            return 'identifier'
+        return 'identifier'
     
     def _format_tokens_with_translator(self, tokens: list) -> list:
         """Convert tokens using the configured translator with TRUE function isolation."""
@@ -456,12 +586,17 @@ class ModularExcelFormatter:
                         # All other functions (including AND, OR) use simple generic processing
                         func_lines = self._process_generic_function(token_text, arg_tokens, base_depth)
                     
-                    # Add the function content
-                    if current_line.strip():
-                        lines.append(self.translator.indent(base_depth) + current_line.strip())
-                        current_line = ""
-                    
-                    lines.extend(func_lines)
+                    # Single-line function renders stay inline with the
+                    # surrounding expression (e.g. INDIRECT("O1")="...")
+                    if len(func_lines) == 1:
+                        current_line += func_lines[0].strip()
+                    else:
+                        # Multi-line function: flush and emit its lines
+                        if current_line.strip():
+                            lines.append(self.translator.indent(base_depth) + current_line.strip())
+                            current_line = ""
+                        
+                        lines.extend(func_lines)
                     i = end_index - 1  # Point to position that will be incremented
                 else:
                     # Function without parentheses - treat as identifier
@@ -605,11 +740,34 @@ class ModularExcelFormatter:
                     combined_line = (self.translator.indent(base_depth + 1) + var_name + 
                                    self.translator.format_punctuation(',') + " " + value_str)
                 
-                # Add comma if not the last pair (check if this isn't the final expression)
-                if i + 2 < len(argument_groups):
-                    combined_line += self.translator.format_punctuation(',')
+                is_last_pair = i + 2 >= len(argument_groups)
                 
-                lines.append(combined_line)
+                if len(combined_line) <= let_value_wrap_threshold:
+                    # Add comma if not the last pair
+                    if not is_last_pair:
+                        combined_line += self.translator.format_punctuation(',')
+                    lines.append(combined_line)
+                else:
+                    # Value too long for one line: expand it with normal
+                    # function processing and hang it off the variable name
+                    value_lines = self._process_token_sequence(
+                        argument_groups[i + 1], base_depth + 1
+                    )
+                    if value_lines:
+                        first_value = value_lines[0].lstrip()
+                        head = (self.translator.indent(base_depth + 1) + var_name +
+                                self.translator.format_punctuation(','))
+                        if not isinstance(self.translator, CompactExcelTranslator):
+                            head += " "
+                        lines.append(head + first_value)
+                        lines.extend(value_lines[1:])
+                        if not is_last_pair:
+                            lines[-1] += self.translator.format_punctuation(',')
+                    else:
+                        if not is_last_pair:
+                            combined_line += self.translator.format_punctuation(',')
+                        lines.append(combined_line)
+                
                 i += 2  # Skip both variable and value
             else:
                 # Final expression (not a pair) - should be the last argument
@@ -746,55 +904,166 @@ class ModularExcelFormatter:
         return result.strip()
     
     def _reverse_parse_with_translator(self, formatted_text: str) -> str:
-        """Use translator-specific reverse parsing."""
-        result = formatted_text
-        
+        """Use translator-specific reverse parsing.
+
+        All spacing cleanups operate on text whose opaque spans (string
+        literals, quoted sheet names, structured references, array
+        constants) have been replaced with placeholders, so cleanup can
+        never alter their interior. Spans are restored at the end.
+        """
+        protected, spans = protect_opaque_spans(formatted_text)
+
         # Apply translator-specific reverse transformations
-        result = self.translator.reverse_parse_cell_reference(result)
+        result = self.translator.reverse_parse_cell_reference(protected)
         result = self.translator.reverse_parse_operator(result)
-        
+
         # Apply line-level reverse parsing if available
         if hasattr(self.translator, 'reverse_parse_line'):
             result = self.translator.reverse_parse_line(result)
-        
-        # Clean up spacing more carefully
+
         # Remove extra spaces around parentheses that were added for formatting
         result = paren_leading_space_rgx.sub('(', result)
         result = paren_trailing_space_rgx.sub(')', result)
-        
+
         # Normalize multiple spaces to single spaces
         result = multiple_spaces_rgx.sub(' ', result)
-        
+
         # Clean up comma spacing - add space after comma, none before
         result = comma_spacing_rgx.sub(', ', result)
-        
-        # For Excel modes (except compact), preserve some operator spacing for readability
+
+        # Excel modes (except compact) keep operator spacing for readability
         if isinstance(self.translator, (AnnotatedExcelTranslator, PlainExcelTranslator)):
-            # Keep spaces around operators if translator added them
             pass  # Don't strip operator spacing for Excel modes
-        elif isinstance(self.translator, CompactExcelTranslator):
-            # For compact mode, remove ALL unnecessary spaces except in string literals
-            # First protect string literals
-            string_parts = []
-            def replace_string(match):
-                string_parts.append(match.group(0))
-                return f"__STRING_{len(string_parts)-1}__"
-            
-            result = string_literal_protection_rgx.sub(replace_string, result)
-            
-            # Remove spaces around operators and commas
-            result = operator_spacing_rgx.sub(r'\1', result)
-            result = multi_char_operator_spacing_rgx.sub(r'\1', result)
-            
-            # Restore string literals
-            for i, string_literal in enumerate(string_parts):
-                result = result.replace(f"__STRING_{i}__", string_literal)
         else:
-            # For JavaScript mode, clean up operator spacing 
+            # Compact and JavaScript modes remove operator/comma spacing.
+            # String literals are already protected, so no inner content
+            # can be affected here.
             result = operator_spacing_rgx.sub(r'\1', result)
             result = multi_char_operator_spacing_rgx.sub(r'\1', result)
-        
+
+        result = restore_opaque_spans(result, spans)
         return result.strip()
+
+
+def find_structural_issues(formula_text: str) -> list:
+    """Detect token adjacencies that indicate missing commas/operators.
+
+    Excel has no juxtaposition operator: two value tokens side by side
+    (e.g. a number directly followed by an identifier, or ')' followed
+    by a name) always indicate a lost separator - except two adjacent
+    references, which can be Excel's space-as-intersection operator and
+    are flagged as possibly intentional.
+
+    Returns a list of issue dicts with 'left', 'right', and 'message'
+    keys. An empty list means no structural problems were found.
+    """
+    if not formula_text or not formula_text.strip():
+        return []
+
+    clean = formula_text.strip()
+    if clean.startswith('{=') and clean.endswith('}'):
+        clean = clean[2:-1]
+    elif clean.startswith('='):
+        clean = clean[1:]
+
+    probe_formatter = ModularExcelFormatter.create_plain_formatter()
+    try:
+        tokens = probe_formatter._parse_excel_tokens(clean)
+    except ValueError as e:
+        return [{'left': '', 'right': '', 'message': str(e)}]
+
+    value_end_types = {
+        'cell_ref', 'number', 'string', 'identifier',
+        'structured_ref', 'array_literal',
+    }
+    value_start_types = {
+        'cell_ref', 'number', 'string', 'identifier', 'function',
+        'structured_ref', 'array_literal',
+    }
+
+    def ends_value(token_type, token_text):
+        return token_type in value_end_types or token_text == ')'
+
+    def starts_value(token_type, token_text):
+        return token_type in value_start_types or token_text == '('
+
+    issues = []
+    for index in range(len(tokens) - 1):
+        left_type, left_text = tokens[index]
+        right_type, right_text = tokens[index + 1]
+
+        # A function token followed by its ( is a call, not an adjacency
+        if left_type == 'function' and right_text == '(':
+            continue
+
+        # An identifier followed by a bracketed segment is a structured
+        # table reference (Table1[Column]) - legal adjacency
+        if left_type == 'identifier' and right_type == 'structured_ref':
+            continue
+
+        if ends_value(left_type, left_text) and starts_value(right_type, right_text):
+            if left_type == 'cell_ref' and right_type == 'cell_ref':
+                message = (
+                    f"'{left_text}' directly followed by '{right_text}' - "
+                    f"missing comma/operator, or intentional range "
+                    f"intersection (space operator)?"
+                )
+            else:
+                message = (
+                    f"'{left_text}' directly followed by '{right_text}' - "
+                    f"missing comma or operator?"
+                )
+            issues.append({
+                'left': left_text,
+                'right': right_text,
+                'message': message,
+            })
+
+    # LET pair-shape validation: name slots (even positions, except the
+    # final expression) must be single plain identifiers, and the
+    # argument count must be odd. A single lost comma shifts every
+    # downstream pair, which adjacency checks cannot see because the
+    # shifted text is grammatically clean - but the shape check can.
+    for index, (token_type, token_text) in enumerate(tokens):
+        if token_type != 'function' or token_text.upper() != 'LET':
+            continue
+        if index + 1 >= len(tokens) or tokens[index + 1][1] != '(':
+            continue
+
+        arg_tokens, _end = probe_formatter._extract_function_arguments(
+            tokens, index + 1
+        )
+        groups = probe_formatter._split_by_top_level_commas(arg_tokens)
+
+        if len(groups) % 2 == 0:
+            issues.append({
+                'left': token_text, 'right': '',
+                'message': (
+                    f"LET has an even number of arguments "
+                    f"({len(groups)}) - a comma is likely missing"
+                ),
+            })
+
+        for group_index in range(0, len(groups) - 1, 2):
+            group = groups[group_index]
+            content = [tok for tok in group if tok[1].strip()]
+            is_plain_name = (
+                len(content) == 1 and content[0][0] == 'identifier'
+            )
+            if not is_plain_name:
+                rendered = probe_formatter._tokens_to_string(group).strip()
+                issues.append({
+                    'left': rendered, 'right': '',
+                    'message': (
+                        f"LET name slot {group_index // 2 + 1} holds "
+                        f"'{rendered[:40]}' instead of a variable name - "
+                        f"pairing shifted by a missing comma earlier?"
+                    ),
+                })
+                break  # One shift report per LET; the rest cascade from it
+
+    return issues
+
 
 
 def detect_current_mode(text: str) -> str:
@@ -821,36 +1090,37 @@ def detect_current_mode(text: str) -> str:
             return 'a'  # Probably annotated (backward compatibility)
         else:
             # Has comments but no explicit mode indicator
-            # Check for quoted cell references to distinguish j vs a
-            if '"A1"' in text_content or '"B1"' in text_content or '"C1"' in text_content:
-                return 'j'  # Has quotes, likely JavaScript
+            # Backtick cell reference markers are unique to JavaScript mode
+            if '`' in text_content:
+                return 'j'  # Has backtick cell refs, JavaScript
             else:
-                return 'a'  # Has comments but no quotes, likely Annotated
+                return 'a'  # Has comments but no backticks, likely Annotated
     
     # No comments found - check indentation patterns
     has_indentation = any(line.startswith('    ') or line.startswith('\t') for line in lines)
     
     if has_indentation:
-        # Has indentation but NO comments - could be Plain or Compact Excel mode
-        # Look for spacing patterns to distinguish
-        # Compact mode would have minimal spacing around operators and commas
-        sample_line = ""
-        for line in lines:
-            if line.strip() and not line.strip().startswith('//'):
-                sample_line = line.strip()
-                break
+        # Has indentation but NO comments: Plain or Compact Excel mode.
+        # Distinguish by the paren spacing the translators emit: plain
+        # writes "FUNC( " and " )", compact writes "FUNC(" and ")".
+        # Opaque spans are protected so string contents can't confuse
+        # the heuristic.
+        protected_content, _spans = protect_opaque_spans(text_content)
         
-        if sample_line:
-            # Check spacing patterns
-            has_spaced_commas = ', ' in sample_line
-            has_spaced_operators = ' = ' in sample_line or ' > ' in sample_line or ' < ' in sample_line
-            
-            if not has_spaced_commas and not has_spaced_operators:
-                return 'c'  # Compact mode (minimal spacing)
-            else:
-                return 'p'  # Plain mode (readable spacing)
-        else:
-            return 'p'  # Default to plain if uncertain
+        if '( ' in protected_content or ' )' in protected_content:
+            return 'p'  # Plain mode (readable paren spacing)
+        
+        # Spaced operators or mid-line comma spacing also indicate plain
+        has_spaced_commas = ', ' in protected_content
+        has_spaced_operators = (
+            ' = ' in protected_content
+            or ' > ' in protected_content
+            or ' < ' in protected_content
+        )
+        if has_spaced_commas or has_spaced_operators:
+            return 'p'  # Plain mode (readable spacing)
+        
+        return 'c'  # Compact mode (minimal spacing)
     
     return 'p'  # Default to plain if uncertain
 
@@ -952,13 +1222,20 @@ def main():
     try:
         if operation == 'fold':
             result = formatter.fold_formula(input_text)
+            excel_side = input_text
         elif operation == 'unfold':
             result = formatter.unfold_formula(input_text)
+            excel_side = result
         elif operation == 'auto':
             result = auto_format_with_mode(input_text, mode)
+            was_single_line = len(input_text.strip().split('\n')) == 1
+            excel_side = input_text if was_single_line else result
         else:
             print(f"Unknown operation: {operation}", file=sys.stderr)
             return 1
+        
+        for issue in find_structural_issues(excel_side):
+            print(f"warning: {issue['message']}", file=sys.stderr)
         
         print(result)
         return 0

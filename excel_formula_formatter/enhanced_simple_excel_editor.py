@@ -24,6 +24,12 @@ from rich.text import Text
 from rich.table import Table
 
 try:
+    from excel_formula_formatter.version_info import get_version_string
+    from excel_formula_formatter.clipboard_helpers import (
+        detect_session_type,
+        get_clipboard_text,
+        set_clipboard_text,
+    )
     from excel_formula_formatter.modular_excel_formatter import (
         ModularExcelFormatter, detect_current_mode, safe_mode_switch, auto_format_with_mode
     )
@@ -82,7 +88,8 @@ class EnhancedFourModeExcelEditor:
         header.add_row("Q = Quit", "Tools = Clipboard diagnostic")
         header.add_row("", default_hint)
         
-        return Panel(header, title="Excel Formula Terminal Editor (4 Modes)", border_style="blue")
+        panel_title = f"Excel Formula Terminal Editor (4 Modes) — v{get_version_string()}"
+        return Panel(header, title=panel_title, border_style="blue")
 
     def show_mode_info(self):
         """Show information about available modes."""
@@ -157,180 +164,17 @@ class EnhancedFourModeExcelEditor:
         return 'sudo <package_manager> install'  # Generic fallback
     
     def detect_session_type(self):
-        """Detect if we're in X11 or Wayland session."""
-        import os
-        
-        # First try the standard way
-        session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
-        
-        if session_type in ["wayland", "x11"]:
-            return session_type
-        
-        # Fallback to display variables
-        wayland_display = os.environ.get('WAYLAND_DISPLAY', '')
-        if wayland_display and wayland_display.startswith('wayland'):
-            return 'wayland'
-        
-        if os.environ.get('DISPLAY'):
-            return 'x11'
-        
-        # Last resort: process check
-        try:
-            import subprocess
-            
-            # Quick check for wayland compositor processes
-            wayland_check = subprocess.run(['ps', 'ax'], capture_output=True, text=True)
-            if wayland_check.returncode == 0 and 'wayland' in wayland_check.stdout.lower():
-                return 'wayland'
-            
-            # Quick check for xorg processes  
-            if wayland_check.returncode == 0 and 'xorg' in wayland_check.stdout.lower():
-                return 'x11'
-                
-        except Exception:
-            pass
-        
-        return 'unknown'
+        """Detect if we're in X11 or Wayland session (shared helper)."""
+        return detect_session_type()
 
     def get_clipboard_text(self):
-        """Get text from clipboard with session-aware tool selection."""
-        system = platform.system()
-        
-        # macOS: Use native tools directly (most reliable)
-        if system == "Darwin":
-            try:
-                result = subprocess.run(["pbpaste"], capture_output=True, text=True)
-                if result.returncode == 0:
-                    return result.stdout.strip()
-            except Exception:
-                pass
-            return None
-        
-        # Non-macOS: Try Python clipboard libraries first (most reliable)
-        try:
-            import pyperclip
-            content = pyperclip.paste()
-            if content and content.strip():
-                return content.strip()
-        except ImportError:
-            pass
-        except Exception:
-            pass
-        
-        # Try tkinter clipboard (usually available with Python)
-        try:
-            import tkinter as tk
-            root = tk.Tk()
-            root.withdraw()  # Hide the window
-            content = root.clipboard_get()
-            root.destroy()
-            if content and content.strip():
-                return content.strip()
-        except Exception:
-            pass
-            
-        # Fall back to system clipboard tools with session-aware prioritization
-        if system == "Linux":
-            session_type = self.detect_session_type()
-            
-            # Prioritize tools based on session type
-            if session_type == 'wayland':
-                # Wayland session: prioritize wl-paste
-                clipboard_tools = [
-                    (["wl-paste"], "wl-paste", False),
-                    (["xclip", "-selection", "{}", "-o"], "xclip", True),
-                    (["xsel", "--{}", "--output"], "xsel", True),
-                ]
-            else:
-                # X11 session or unknown: prioritize X11 tools
-                clipboard_tools = [
-                    (["xclip", "-selection", "{}", "-o"], "xclip", True),
-                    (["xsel", "--{}", "--output"], "xsel", True),
-                    (["wl-paste"], "wl-paste", False),
-                ]
-            
-            # Try multiple clipboard selections since content might be in PRIMARY instead of CLIPBOARD
-            selections = ["clipboard", "primary", "secondary"]
-            
-            for tool_cmd_template, tool_name, uses_selections in clipboard_tools:
-                if uses_selections:
-                    # Try each selection
-                    for selection in selections:
-                        tool_cmd = []
-                        for part in tool_cmd_template:
-                            if "{}" in part:
-                                tool_cmd.append(part.format(selection))
-                            else:
-                                tool_cmd.append(part)
-                        
-                        try:
-                            result = subprocess.run(tool_cmd, capture_output=True, text=True, timeout=2)
-                            if result.returncode == 0 and result.stdout.strip():
-                                return result.stdout.strip()
-                        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
-                            continue
-                        except Exception:
-                            continue
-                else:
-                    # Tool doesn't use selections (like wl-paste)
-                    try:
-                        result = subprocess.run(tool_cmd_template, capture_output=True, text=True, timeout=2)
-                        if result.returncode == 0 and result.stdout.strip():
-                            return result.stdout.strip()
-                    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
-                        continue
-                    except Exception:
-                        continue
-                    
-        elif system == "Windows":
-            try:
-                result = subprocess.run(["powershell", "Get-Clipboard"], capture_output=True, text=True)
-                if result.returncode == 0:
-                    return result.stdout.strip()
-            except Exception:
-                pass
-        
-        return None
-    
+        """Get text from clipboard via the shared session-aware helper."""
+        return get_clipboard_text()
+
     def set_clipboard_text(self, text):
-        """Set clipboard text with multiple tool support."""
-        system = platform.system()
-        
-        if system == "Darwin":  # macOS
-            try:
-                subprocess.run(["pbcopy"], input=text, text=True, check=True)
-                return True
-            except Exception:
-                pass
-                
-        elif system == "Linux":
-            # Try multiple clipboard tools in order of preference
-            clipboard_tools = [
-                # Wayland native (preferred for Wayland sessions)
-                ["wl-copy"],
-                # X11 tools (for X11 sessions or XWayland)
-                ["xclip", "-selection", "clipboard"],
-                ["xsel", "--clipboard", "--input"],
-            ]
-            
-            for tool_cmd in clipboard_tools:
-                try:
-                    result = subprocess.run(tool_cmd, input=text, text=True, timeout=2, check=True)
-                    return True
-                except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
-                    continue
-                except Exception:
-                    continue
-                    
-        elif system == "Windows":
-            try:
-                subprocess.run(["clip"], input=text, text=True, check=True)
-                return True
-            except Exception:
-                pass
-        
-        return False
-    
+        """Set clipboard text via the shared session-aware helper."""
+        return set_clipboard_text(text)
+
     def auto_toggle(self):
         """Auto-detect and toggle format using current mode formatter."""
         if not self.text.strip():

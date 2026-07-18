@@ -1,6 +1,10 @@
-# Linux only
-pyperclip>=1.9.0
-tk>=0.1.0
+# Core terminal UI
+rich>=13.0
 
-# Linux Wayland
-# wl-clipboard (native package)
+# Full-screen Textual editor (default UI); [syntax] pulls tree-sitter
+# grammars for JavaScript-mode highlighting
+textual[syntax]>=1.0
+
+# Linux clipboard (native packages, not pip):
+#   Wayland: wl-clipboard
+#   X11:     xclip or xsel

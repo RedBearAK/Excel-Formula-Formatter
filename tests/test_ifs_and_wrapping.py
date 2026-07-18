@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-Test IFS case formatting and natural wrapping functionality.
+Test IFS case formatting and multi-argument function wrapping.
 File: tests/test_ifs_and_wrapping.py
+
+Ported to the modular formatter after the legacy formatter was removed.
+Annotated mode (a) carries the CASE/RESULT PAIR separators; Plain mode
+(p) must produce no comments at all.
 """
 
 import sys
@@ -12,76 +16,65 @@ from pathlib import Path
 package_parent = Path(__file__).parent.parent
 sys.path.insert(0, str(package_parent))
 
-from excel_formula_formatter import ExcelFormulaFormatter
+from excel_formula_formatter.formula_text_guards import normalize_formula_for_comparison
 from excel_formula_formatter.modular_excel_formatter import ModularExcelFormatter
 
 
-def test_and_natural_wrapping():
-    """Test AND function with natural length-based wrapping."""
-    formatter = ExcelFormulaFormatter()
+def normalize_formula(formula: str) -> str:
+    """Strict normalization: spaces inside strings, sheet quotes, and
+    brackets are preserved so corruption cannot hide."""
+    return normalize_formula_for_comparison(formula)
+
+
+def test_and_argument_wrapping():
+    """Test AND function with one argument per line in annotated mode."""
+    formatter = ModularExcelFormatter.create_annotated_formatter()
     original = '=AND(has_Paid_Date,NOT(has_Price),NOT(has_Invoice_Date),NOT(has_Routing_ETA),NOT(has_Title_Date))'
-    
+
     folded = formatter.fold_formula(original)
     unfolded = formatter.unfold_formula(folded)
-    
+
     print(f"Original: {original}")
     print(f"Folded:\n{folded}")
     print(f"Unfolded: {unfolded}")
     print()
-    
-    # Check for natural wrapping pattern
+
+    # Multi-argument AND should place each argument on its own indented line,
+    # while simple NOT(x) calls stay inline on their argument lines.
     lines = folded.split('\n')
-    has_natural_wrap = False
-    has_proper_spacing = False
-    
-    for line in lines:
-        if 'AND(' in line and 'has_Paid_Date' in line:
-            # Should start with 2 spaces after AND(
-            if 'AND(  has_Paid_Date' in line:
-                has_proper_spacing = True
-            # Should wrap naturally when too long
-            if len(line) > 60:  # Reasonable length for wrapping
-                has_natural_wrap = True
-        elif line.strip().endswith(')') and 'NOT(' in line:
-            # Continuation line should be indented
-            has_natural_wrap = True
-    
-    # Check round-trip
-    original_norm = original[1:] if original.startswith('=') else original
-    unfolded_norm = unfolded[1:] if unfolded.startswith('=') else unfolded
-    round_trip_success = original_norm.replace(' ', '') == unfolded_norm.replace(' ', '')
-    
-    success = has_proper_spacing and round_trip_success
-    print(f"Has proper spacing: {has_proper_spacing}")
-    print(f"Has natural wrapping: {has_natural_wrap}")
+    not_arg_lines = [ln for ln in lines if ln.strip().startswith('NOT(')]
+    args_on_own_lines = len(not_arg_lines) == 4
+    args_indented = all(ln.startswith('    ') for ln in not_arg_lines)
+
+    round_trip_success = normalize_formula(original) == normalize_formula(unfolded)
+
+    success = args_on_own_lines and args_indented and round_trip_success
+    print(f"NOT arguments each on own line: {args_on_own_lines}")
+    print(f"Argument lines indented: {args_indented}")
     print(f"Round-trip success: {round_trip_success}")
     print(f"Overall success: {success}")
     return success
 
 
 def test_simple_ifs():
-    """Test simple IFS function with case/result pair separators.""" 
-    formatter = ExcelFormulaFormatter()
+    """Test simple IFS function with case/result pair separators."""
+    formatter = ModularExcelFormatter.create_annotated_formatter()
     original = '=IFS(A1>0,"Positive",A1<0,"Negative",TRUE,"Zero")'
-    
+
     folded = formatter.fold_formula(original)
     unfolded = formatter.unfold_formula(folded)
-    
+
     print(f"Original: {original}")
     print(f"Folded:\n{folded}")
     print(f"Unfolded: {unfolded}")
     print()
-    
-    # Check for case/result pair separators
+
     lines = folded.split('\n')
     has_pair_separators = any('CASE/RESULT PAIR' in line for line in lines)
-    has_blank_lines = '' in lines  # Should have blank lines between cases
-    
-    # Check round-trip
-    original_norm = original[1:] if original.startswith('=') else original
-    unfolded_norm = unfolded[1:] if unfolded.startswith('=') else unfolded
-    round_trip_success = original_norm.replace(' ', '') == unfolded_norm.replace(' ', '')
-    
+    has_blank_lines = '' in lines  # Blank lines between cases
+
+    round_trip_success = normalize_formula(original) == normalize_formula(unfolded)
+
     success = has_pair_separators and has_blank_lines and round_trip_success
     print(f"Has CASE/RESULT PAIR separators: {has_pair_separators}")
     print(f"Has blank lines: {has_blank_lines}")
@@ -91,68 +84,60 @@ def test_simple_ifs():
 
 
 def test_complex_ifs_with_and():
-    """Test complex IFS with AND conditions and natural wrapping."""
-    formatter = ExcelFormulaFormatter()
+    """Test complex IFS with AND conditions in annotated mode."""
+    formatter = ModularExcelFormatter.create_annotated_formatter()
     original = '=IFS(AND(has_Paid_Date,NOT(has_Price),has_Invoice_Date),Invoice_with_Days,AND(has_Paid_Date,NOT(has_Price),NOT(has_Invoice_Date)),Routing_plus_21,TRUE,"")'
-    
+
     folded = formatter.fold_formula(original)
     unfolded = formatter.unfold_formula(folded)
-    
+
     print(f"Original: {original}")
     print(f"Folded:\n{folded}")
     print(f"Unfolded: {unfolded}")
     print()
-    
-    # Check for case structure
+
     lines = folded.split('\n')
     has_pair_separators = any('CASE/RESULT PAIR' in line for line in lines)
-    
-    # Check that AND functions use natural wrapping (no generic comments)
+
+    # AND functions should not emit their own generic comments
     has_logical_and_comment = any('Logical AND' in line for line in lines)
-    
-    # Check for proper AND spacing
-    has_and_spacing = any('AND(  has_Paid_Date' in line for line in lines)
-    
-    # Check round-trip
-    original_norm = original[1:] if original.startswith('=') else original
-    unfolded_norm = unfolded[1:] if unfolded.startswith('=') else unfolded
-    round_trip_success = original_norm.replace(' ', '') == unfolded_norm.replace(' ', '')
-    
-    success = (has_pair_separators and 
-              not has_logical_and_comment and has_and_spacing and round_trip_success)
-    
+
+    round_trip_success = normalize_formula(original) == normalize_formula(unfolded)
+
+    success = has_pair_separators and not has_logical_and_comment and round_trip_success
     print(f"Has case/result pair separators: {has_pair_separators}")
     print(f"No 'Logical AND' comments: {not has_logical_and_comment}")
-    print(f"Has AND spacing: {has_and_spacing}")
     print(f"Round-trip success: {round_trip_success}")
     print(f"Overall success: {success}")
     return success
 
 
-def test_modular_ifs_plain():
-    """Test IFS with Plain modular formatter."""
+def test_ifs_plain_mode_no_comments():
+    """Test IFS in Plain mode: smart indenting with zero comments."""
     formatter = ModularExcelFormatter.create_plain_formatter()
     original = '=IFS(A1>0,"High",A1<0,"Low",TRUE,"Medium")'
-    
+
     folded = formatter.fold_formula(original)
     unfolded = formatter.unfold_formula(folded)
-    
+
     print(f"Original: {original}")
     print(f"Folded:\n{folded}")
     print(f"Unfolded: {unfolded}")
     print()
-    
-    # Check for Plain-style case/result pair separators (using // comments)
+
+    # Plain mode must not contain any comment lines
     lines = folded.split('\n')
-    has_pair_separators = any('CASE/RESULT PAIR' in line and '//' in line for line in lines)
-    
-    # Check round-trip
-    original_norm = original[1:] if original.startswith('=') else original
-    unfolded_norm = unfolded[1:] if unfolded.startswith('=') else unfolded
-    round_trip_success = original_norm.replace(' ', '') == unfolded_norm.replace(' ', '')
-    
-    success = has_pair_separators and round_trip_success
-    print(f"Has Plain case/result pair separators: {has_pair_separators}")
+    has_no_comments = not any('//' in line for line in lines)
+
+    # Arguments should still be broken onto separate indented lines
+    indented_lines = [ln for ln in lines if ln.startswith('    ')]
+    has_indented_args = len(indented_lines) >= 6  # 3 cases x 2 (condition, result)
+
+    round_trip_success = normalize_formula(original) == normalize_formula(unfolded)
+
+    success = has_no_comments and has_indented_args and round_trip_success
+    print(f"Plain mode has no comments: {has_no_comments}")
+    print(f"Arguments on indented lines: {has_indented_args}")
     print(f"Round-trip success: {round_trip_success}")
     print(f"Overall success: {success}")
     return success
@@ -160,26 +145,22 @@ def test_modular_ifs_plain():
 
 def test_switch_function():
     """Test SWITCH function with case/result pair formatting."""
-    formatter = ExcelFormulaFormatter()
+    formatter = ModularExcelFormatter.create_annotated_formatter()
     original = '=SWITCH(A1,1,"One",2,"Two",3,"Three","Other")'
-    
+
     folded = formatter.fold_formula(original)
     unfolded = formatter.unfold_formula(folded)
-    
+
     print(f"Original: {original}")
     print(f"Folded:\n{folded}")
     print(f"Unfolded: {unfolded}")
     print()
-    
-    # Check for case/result pair separators in SWITCH
+
     lines = folded.split('\n')
     has_pair_separators = any('CASE/RESULT PAIR' in line for line in lines)
-    
-    # Check round-trip
-    original_norm = original[1:] if original.startswith('=') else original
-    unfolded_norm = unfolded[1:] if unfolded.startswith('=') else unfolded
-    round_trip_success = original_norm.replace(' ', '') == unfolded_norm.replace(' ', '')
-    
+
+    round_trip_success = normalize_formula(original) == normalize_formula(unfolded)
+
     success = has_pair_separators and round_trip_success
     print(f"Has CASE/RESULT PAIR separators: {has_pair_separators}")
     print(f"Round-trip success: {round_trip_success}")
@@ -188,19 +169,19 @@ def test_switch_function():
 
 
 def main():
-    """Run all IFS and natural wrapping tests."""
-    print("IFS Case/Result Pair Formatting and Natural Wrapping Tests")
+    """Run all IFS and wrapping tests."""
+    print("IFS Case/Result Pair Formatting and Wrapping Tests")
     print("=" * 60)
     print()
-    
+
     tests = [
-        ("AND Natural Wrapping", test_and_natural_wrapping),
+        ("AND Argument Wrapping", test_and_argument_wrapping),
         ("Simple IFS Cases", test_simple_ifs),
         ("Complex IFS with AND", test_complex_ifs_with_and),
-        ("Modular IFS (Plain)", test_modular_ifs_plain),
-        ("SWITCH Function", test_switch_function)
+        ("IFS Plain Mode (No Comments)", test_ifs_plain_mode_no_comments),
+        ("SWITCH Function", test_switch_function),
     ]
-    
+
     results = []
     for test_name, test_func in tests:
         print(f"Running {test_name} test...")
@@ -208,29 +189,27 @@ def main():
         try:
             success = test_func()
             results.append(success)
-            print(f"✓ {test_name}: {'PASS' if success else 'FAIL'}")
+            print(f"{'✓' if success else '✗'} {test_name}: {'PASS' if success else 'FAIL'}")
         except Exception as e:
             print(f"✗ {test_name}: ERROR - {e}")
             results.append(False)
         print()
-    
-    # Final summary
+
     passed = sum(results)
     total = len(results)
-    
+
     print("=" * 60)
-    print(f"Enhancement Test Results: {passed}/{total} tests passed")
-    
+    print(f"IFS/Wrapping Test Results: {passed}/{total} tests passed")
+
     if passed == total:
-        print("🎉 All enhancement tests passed!")
-        print("✨ IFS case/result pair formatting and natural wrapping are working correctly.")
+        print("🎉 All IFS and wrapping tests passed!")
         return 0
     else:
-        print("❌ Some enhancement tests failed. Check the output above for details.")
+        print("❌ Some tests failed. Check the output above for details.")
         return 1
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())
 
 # End of file #
